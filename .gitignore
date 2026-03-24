@@ -1,0 +1,42 @@
+# ─── OS ───
+.DS_Store
+Thumbs.db
+
+# ─── Node ───
+node_modules/
+package-lock.json
+
+# ─── Python ───
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ─── IDE ───
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── Claude Code 本地配置（不跟踪个人设置） ───
+.claude/settings.local.json
+.claude/settings.local.json.bak
+.claude/bash-command-log.txt
+
+# ─── 运行时数据（cookie、采集输出、临时文件） ───
+.claude/skills/xiaohongshu-playwright/data/cookies.json
+.claude/skills/xiaohongshu-playwright/data/comments.json
+.claude/skills/xiaohongshu-playwright/output/*.xlsx
+.claude/skills/hr-system/scripts/__pycache__/
+
+# ─── 通用输出 ───
+*.xlsx
+!.claude/skills/xlsx/**
+*.pdf
+!.claude/skills/pdf/**
+!.claude/skills/theme-factory/theme-showcase.pdf
+
+# ─── 环境变量 ───
+.env
+.env.local

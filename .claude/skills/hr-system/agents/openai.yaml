@@ -1,0 +1,4 @@
+interface:
+  display_name: "HR System"
+  short_description: "登录 FITS EHR 并完成固定请假或外出申请流程"
+  default_prompt: "使用 hr-system 技能，并先读取 agent-browser 技能。登录 FITS EHR，读取 .env 中的 HR_USER/HR_PASS，先向我收集请假或外出申请关键信息，再完成提交与结果核验。"

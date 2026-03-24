@@ -1,0 +1,6 @@
+{
+  "name": "browser-use",
+  "version": "1.0.0",
+  "source": "https://github.com/browser-use/browser-use",
+  "description": "Browser automation with browser-use CLI"
+}
