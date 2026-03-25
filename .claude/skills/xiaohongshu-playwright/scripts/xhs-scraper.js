@@ -63,11 +63,6 @@ function randomDelay(min = 1000, max = 3000) {
   );
 }
 
-async function humanScroll(page, distance = 300) {
-  await page.mouse.wheel(0, distance + Math.random() * 200);
-  await randomDelay(500, 1500);
-}
-
 // ─── Playwright 浏览器安装检查 ───
 async function ensureBrowserInstalled() {
   try {
@@ -218,12 +213,39 @@ async function manualLogin(page, context, cookiePath) {
 }
 
 // ─── 搜索帖子 ───
-async function searchPosts(page, keyword, maxPosts) {
+async function searchPosts(page, keyword, maxPosts, context, cookiePath) {
   const searchUrl = `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}&source=web_search_result_note`;
   console.log(`🔍 搜索关键词: ${keyword}`);
 
   await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
-  await randomDelay(2000, 4000);
+  await randomDelay(3000, 5000);
+
+  // 检查搜索页是否有登录弹窗（cookie 可能对 explore 有效但对搜索页失效）
+  const hasModal = await page.evaluate(() => {
+    return !!document.querySelector(".login-container, [class*='login-modal'], [class*='LoginModal']");
+  });
+
+  if (hasModal) {
+    console.log("⚠️  搜索页检测到登录弹窗，等待用户扫码...");
+    const maxWait = 5 * 60 * 1000;
+    const pollInterval = 3000;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < maxWait) {
+      await new Promise((r) => setTimeout(r, pollInterval));
+      const loggedIn = await page.evaluate(() => {
+        const hasLogin = !!document.querySelector(".login-container, [class*='login-modal'], [class*='LoginModal']");
+        const hasCookieUser = document.cookie.includes("customer_id") || document.cookie.includes("access-token");
+        return !hasLogin && hasCookieUser;
+      });
+      if (loggedIn) break;
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      process.stdout.write(`\r⏳ 已等待 ${elapsed}s，请在浏览器中完成登录...`);
+    }
+    console.log("\n✅ 登录完成");
+    await saveCookies(context, cookiePath);
+    await randomDelay(2000, 3000);
+  }
 
   // 等待搜索结果加载
   try {
@@ -310,148 +332,301 @@ async function dismissOverlays(page) {
   } catch {}
 }
 
-// ─── 提取单篇帖子评论（兼容弹窗和全页模式） ───
+// ─── 从 __INITIAL_STATE__ 提取帖子详情和评论 ───
+// 参考 xiaohongshu-skills/scripts/xhs/feed_detail.py 的实现思路：
+// 小红书前端将所有数据存储在 window.__INITIAL_STATE__.note.noteDetailMap 中，
+// 滚动页面触发前端加载更多评论时，该 state 会同步更新。
+// 比 DOM 抓取和 API 拦截都更可靠、更完整。
+
+const EXTRACT_DETAIL_JS = `
+(() => {
+  try {
+    const state = window.__INITIAL_STATE__;
+    if (state && state.note && state.note.noteDetailMap) {
+      return JSON.stringify(state.note.noteDetailMap);
+    }
+  } catch {}
+  return "";
+})()
+`;
+
+function parseStateComments(noteDetailMap, feedId) {
+  // 找到对应 feedId 的数据，如果 feedId 未知则取第一个
+  let noteData = noteDetailMap[feedId];
+  if (!noteData) {
+    const keys = Object.keys(noteDetailMap);
+    if (keys.length > 0) noteData = noteDetailMap[keys[0]];
+  }
+  if (!noteData) return { note: null, comments: [] };
+
+  // 提取帖子信息
+  const rawNote = noteData.note || {};
+  const note = {
+    title: rawNote.title || "",
+    desc: rawNote.desc || "",
+    type: rawNote.type || "",
+    ipLocation: rawNote.ipLocation || "",
+    author: rawNote.user?.nickname || rawNote.user?.nickName || "",
+    authorId: rawNote.user?.userId || "",
+    commentCount: rawNote.interactInfo?.commentCount || "0",
+    likedCount: rawNote.interactInfo?.likedCount || "0",
+    collectedCount: rawNote.interactInfo?.collectedCount || "0",
+  };
+
+  // 提取评论列表
+  const rawComments = noteData.comments?.list || [];
+  const comments = [];
+
+  for (const c of rawComments) {
+    const userId = c.userInfo?.userId || "";
+    comments.push({
+      id: c.id || "",
+      username: c.userInfo?.nickname || c.userInfo?.nickName || "",
+      userId,
+      avatar: c.userInfo?.avatar || "",
+      content: c.content || "",
+      likes: c.likeCount || "0",
+      createTime: c.createTime || 0,
+      ipLocation: c.ipLocation || "",
+      profileUrl: userId
+        ? `https://www.xiaohongshu.com/user/profile/${userId}`
+        : "",
+      subCommentCount: c.subCommentCount || "0",
+      subComments: (c.subComments || []).map((sub) => {
+        const subUserId = sub.userInfo?.userId || "";
+        return {
+          id: sub.id || "",
+          username: sub.userInfo?.nickname || sub.userInfo?.nickName || "",
+          userId: subUserId,
+          content: sub.content || "",
+          likes: sub.likeCount || "0",
+          ipLocation: sub.ipLocation || "",
+          profileUrl: subUserId
+            ? `https://www.xiaohongshu.com/user/profile/${subUserId}`
+            : "",
+        };
+      }),
+    });
+  }
+
+  return { note, comments };
+}
+
+// ─── 提取单篇帖子评论（基于 __INITIAL_STATE__） ───
 async function extractComments(page, postUrl, maxComments) {
   console.log(`  📖 打开帖子: ${postUrl}`);
 
   await page.goto(postUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
   await randomDelay(2000, 4000);
 
-  // 检测页面模式：弹窗 or 全页
-  const isPopupMode = await page.evaluate(() => {
-    return !!document.querySelector(
-      '[class*="note-detail-modal"], [class*="NoteDetailModal"], .note-detail-mask'
-    );
-  });
+  // 从 URL 提取 feedId
+  const feedIdMatch = postUrl.match(/\/([a-f0-9]{24})\b/);
+  const feedId = feedIdMatch ? feedIdMatch[1] : "";
 
-  if (isPopupMode) {
-    console.log("  📋 检测到弹窗模式");
+  // 等待 __INITIAL_STATE__ 可用
+  try {
+    await page.waitForFunction(
+      () => window.__INITIAL_STATE__?.note?.noteDetailMap,
+      { timeout: 10000 }
+    );
+  } catch {
+    console.warn("  ⚠️ __INITIAL_STATE__ 加载超时");
   }
 
-  // 评论区容器选择器（兼容两种模式）
-  const commentContainerSelectors = isPopupMode
-    ? '[class*="note-detail-modal"] [class*="comment"], [class*="NoteDetailModal"] [class*="comment"]'
-    : '[class*="comment"], [class*="Comment"], .note-comment';
-
-  // 等待评论区加载
+  // 等待评论区容器出现（参考 selectors.py: COMMENTS_CONTAINER = ".comments-container"）
   try {
-    await page.waitForSelector(commentContainerSelectors, { timeout: 8000 });
+    await page.waitForSelector(".comments-container", { timeout: 8000 });
   } catch {
     console.warn("  ⚠️ 评论区加载超时");
   }
 
-  // 滚动加载更多评论
-  // 弹窗模式下需要在弹窗内部滚动，全页模式滚动整个页面
-  let prevCount = 0;
-  for (let i = 0; i < 5; i++) {
-    if (isPopupMode) {
-      // 弹窗模式：尝试在弹窗内滚动
-      await page.evaluate(() => {
-        const modal = document.querySelector(
-          '[class*="note-detail-modal"], [class*="NoteDetailModal"], [class*="note-scroller"]'
-        );
-        if (modal) modal.scrollTop += 500;
-      });
-      await randomDelay(1000, 2000);
-    } else {
-      await humanScroll(page, 500);
-      await randomDelay(1000, 2000);
-    }
-
-    // 点击"查看更多评论"
-    const moreBtn = await page.$(
-      '[class*="show-more"], [class*="expand"], button:has-text("查看更多"), button:has-text("展开")'
-    );
-    if (moreBtn) {
-      try {
-        await moreBtn.click();
-        await randomDelay(1000, 2000);
-      } catch {}
-    }
-
-    const count = await page.evaluate(() =>
-      document.querySelectorAll(
-        '[class*="comment-item"], [class*="CommentItem"], .comment-inner'
-      ).length
-    );
-    if (count >= maxComments || count === prevCount) break;
-    prevCount = count;
-  }
-
-  // 提取评论数据
-  const comments = await page.evaluate((max) => {
-    const results = [];
-    const commentEls = document.querySelectorAll(
-      '[class*="comment-item"], [class*="CommentItem"], .comment-inner'
-    );
-
-    commentEls.forEach((el) => {
-      if (results.length >= max) return;
-
-      const username =
-        el
-          .querySelector(
-            '[class*="user-name"], [class*="nickname"], [class*="author-name"]'
-          )
-          ?.innerText?.trim() || "";
-      const content =
-        el
-          .querySelector(
-            '[class*="content"], [class*="text"], [class*="note-text"]'
-          )
-          ?.innerText?.trim() || "";
-      const likesText =
-        el
-          .querySelector('[class*="like"], [class*="count"]')
-          ?.innerText?.trim() || "0";
-      const likes = parseInt(likesText.replace(/[^\d]/g, ""), 10) || 0;
-
-      // 提取用户链接和 userId
-      const userLink =
-        el.querySelector('a[href*="/user/profile/"]')?.href || "";
-      const userIdMatch = userLink.match(/\/user\/profile\/([a-zA-Z0-9]+)/);
-      const userId = userIdMatch ? userIdMatch[1] : "";
-
-      // 提取头像
-      const avatar =
-        el.querySelector('[class*="avatar"] img, img[class*="avatar"]')?.src ||
-        "";
-
-      if (username && content) {
-        results.push({
-          username,
-          userId,
-          avatar,
-          content,
-          likes,
-          profileUrl: userId
-            ? `https://www.xiaohongshu.com/user/profile/${userId}`
-            : "",
-        });
-      }
-    });
-    return results;
-  }, maxComments);
-
-  // 提取帖子标题和作者
-  const postInfo = await page.evaluate(() => {
-    const title =
-      document
-        .querySelector(
-          '[class*="note-title"], #detail-title, [class*="title"]'
-        )
-        ?.innerText?.trim() || "";
-    const author =
-      document
-        .querySelector(
-          '[class*="author-name"], [class*="username"], .author-wrapper [class*="name"]'
-        )
-        ?.innerText?.trim() || "";
-    return { title, author };
+  // 检查是否无评论（参考 selectors.py: NO_COMMENTS_TEXT）
+  const noComments = await page.evaluate(() => {
+    const el = document.querySelector(".no-comments-text");
+    return el ? el.textContent.includes("这是一片荒地") : false;
   });
 
-  console.log(`  💬 提取到 ${comments.length} 条评论`);
-  return { ...postInfo, comments };
+  if (noComments) {
+    console.log("  ℹ️ 该帖子无评论");
+    const result = await page.evaluate(EXTRACT_DETAIL_JS);
+    const noteDetailMap = result ? JSON.parse(result) : {};
+    const { note } = parseStateComments(noteDetailMap, feedId);
+    return {
+      title: note?.title || "",
+      author: note?.author || "",
+      commentCount: note?.commentCount || "0",
+      comments: [],
+      screenshotFile: "",
+    };
+  }
+
+  // 滚动加载全部评论（参考 feed_detail.py 的状态机逻辑）
+  // 先滚动到评论区（参考 selectors.py: COMMENTS_CONTAINER）
+  await page.evaluate(() => {
+    const container = document.querySelector(".comments-container");
+    if (container) container.scrollIntoView({ behavior: "smooth" });
+  });
+  await randomDelay(500, 1000);
+
+  const MAX_ATTEMPTS = maxComments > 0 ? maxComments * 3 : 150;
+  const STAGNANT_LIMIT = 8;
+  let lastCount = 0;
+  let stagnantChecks = 0;
+  let totalClicked = 0;
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    // 检查是否到达底部（参考 selectors.py: END_CONTAINER = ".end-container"）
+    const isEnd = await page.evaluate(() => {
+      const el = document.querySelector(".end-container");
+      if (!el) return false;
+      const text = el.textContent.trim().toUpperCase();
+      return text.includes("THE END") || text.includes("THEEND");
+    });
+
+    if (isEnd) {
+      const count = await page.evaluate(
+        () => document.querySelectorAll(".parent-comment").length
+      );
+      console.log(`  ✅ 已到达评论底部 THE END，共 ${count} 条一级评论`);
+      break;
+    }
+
+    // 定期点击"展开N条回复"按钮（参考 selectors.py: SHOW_MORE_BUTTON = ".show-more"）
+    if (attempt % 3 === 0) {
+      const clicked = await page.evaluate(() => {
+        const btns = document.querySelectorAll(".show-more");
+        let count = 0;
+        btns.forEach((btn) => {
+          // 跳过回复数 > 50 的按钮（避免展开太多导致卡顿）
+          const text = btn.textContent || "";
+          const match = text.match(/展开\s*(\d+)\s*条回复/);
+          if (match && parseInt(match[1], 10) > 50) return;
+          btn.click();
+          count++;
+        });
+        return count;
+      });
+      if (clicked > 0) {
+        totalClicked += clicked;
+        await randomDelay(800, 1500);
+      }
+    }
+
+    // 获取当前评论数（参考 selectors.py: PARENT_COMMENT = ".parent-comment"）
+    const currentCount = await page.evaluate(
+      () => document.querySelectorAll(".parent-comment").length
+    );
+
+    if (currentCount !== lastCount) {
+      if (attempt % 5 === 0 || currentCount - lastCount > 5) {
+        console.log(`  📊 评论加载中: ${currentCount} 条`);
+      }
+      lastCount = currentCount;
+      stagnantChecks = 0;
+    } else {
+      stagnantChecks++;
+    }
+
+    // 检查是否达到目标
+    if (maxComments > 0 && currentCount >= maxComments) {
+      console.log(`  ✅ 已达目标评论数: ${currentCount}/${maxComments}`);
+      break;
+    }
+
+    // 停滞过多 → 大冲刺滚动
+    if (stagnantChecks >= STAGNANT_LIMIT) {
+      console.log("  ⚡ 停滞过多，尝试大冲刺滚动...");
+      for (let j = 0; j < 10; j++) {
+        await page.mouse.wheel(0, 1000 + Math.random() * 500);
+        await randomDelay(200, 400);
+      }
+      stagnantChecks = 0;
+      await randomDelay(1000, 2000);
+      continue;
+    }
+
+    // 滚动到最后一条评论（参考 feed_detail.py: _scroll_to_last_comment）
+    if (currentCount > 0) {
+      await page.evaluate(() => {
+        const comments = document.querySelectorAll(".parent-comment");
+        if (comments.length > 0) {
+          comments[comments.length - 1].scrollIntoView({ behavior: "smooth" });
+        }
+      });
+    }
+
+    // 人类化滚动
+    const scrollDelta = 300 + Math.random() * 400;
+    await page.mouse.wheel(0, scrollDelta);
+    await randomDelay(800, 1500);
+  }
+
+  console.log(`  🔘 展开回复按钮点击: ${totalClicked} 次`);
+
+  // 从 __INITIAL_STATE__ 一次性提取全部数据
+  const stateResult = await page.evaluate(EXTRACT_DETAIL_JS);
+  if (!stateResult) {
+    console.warn("  ⚠️ 未获取到 __INITIAL_STATE__ 数据");
+    return { title: "", author: "", commentCount: "0", comments: [], screenshotFile: "" };
+  }
+
+  const noteDetailMap = JSON.parse(stateResult);
+  const { note, comments } = parseStateComments(noteDetailMap, feedId);
+
+  // 展平: 主评论 + 子评论都作为独立条目（但保留层级标记）
+  const flatComments = [];
+  for (const c of comments) {
+    flatComments.push({
+      username: c.username,
+      userId: c.userId,
+      avatar: c.avatar,
+      content: c.content,
+      likes: c.likes,
+      ipLocation: c.ipLocation,
+      profileUrl: c.profileUrl,
+      isSubComment: false,
+      subCommentCount: c.subCommentCount,
+    });
+    for (const sub of c.subComments) {
+      flatComments.push({
+        username: sub.username,
+        userId: sub.userId,
+        avatar: "",
+        content: sub.content,
+        likes: sub.likes,
+        ipLocation: sub.ipLocation,
+        profileUrl: sub.profileUrl,
+        isSubComment: true,
+        subCommentCount: "0",
+      });
+    }
+  }
+
+  const totalCommentCount = note?.commentCount || "0";
+  console.log(`  💬 提取到 ${comments.length} 条主评论 + ${flatComments.length - comments.length} 条子评论（帖子总评论数: ${totalCommentCount}）`);
+
+  // 截取帖子全景截图
+  let screenshotFile = "";
+  try {
+    const screenshotDir = path.join(__dirname, "..", "data", "screenshots");
+    if (!fs.existsSync(screenshotDir)) fs.mkdirSync(screenshotDir, { recursive: true });
+
+    const noteId = feedId || Date.now().toString();
+    screenshotFile = path.join(screenshotDir, `${noteId}.png`);
+
+    await page.screenshot({ path: screenshotFile, fullPage: true });
+    console.log(`  📸 帖子截图已保存: ${path.basename(screenshotFile)}`);
+  } catch (e) {
+    console.warn(`  ⚠️ 截图失败: ${e.message}`);
+  }
+
+  return {
+    title: note?.title || "",
+    author: note?.author || "",
+    commentCount: totalCommentCount,
+    comments: flatComments,
+    screenshotFile,
+  };
 }
 
 // ─── 主流程 ───
@@ -513,7 +688,7 @@ async function main() {
     }
 
     // 2. 搜索帖子
-    const posts = await searchPosts(page, opts.keyword, opts.maxPosts);
+    const posts = await searchPosts(page, opts.keyword, opts.maxPosts, context, opts.cookiePath);
 
     if (posts.length === 0) {
       console.error("❌ 未找到任何帖子，请检查关键词或登录状态");
@@ -540,7 +715,9 @@ async function main() {
           title: postData.title || posts[i].title,
           url: posts[i].url,
           author: postData.author || posts[i].author,
+          commentCount: postData.commentCount || "0",
           comments: postData.comments,
+          screenshotFile: postData.screenshotFile || "",
         });
       } catch (e) {
         console.error(`  ❌ 帖子处理失败: ${e.message}`);

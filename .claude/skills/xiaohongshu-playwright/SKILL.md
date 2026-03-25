@@ -53,6 +53,10 @@ node "${SKILL_DIR}/scripts/xhs-scraper.js" \
 
 **登录机制**: 首次运行会打开浏览器并导航到登录页，脚本等待用户完成登录（检测 URL 变化），登录后自动保存 cookie。后续运行自动复用 cookie，可加 `--headless` 参数以无头模式运行。
 
+**输出产物**:
+- `data/comments.json` — 帖子和评论数据
+- `data/screenshots/{noteId}.png` — 每篇帖子的全景截图（帖子内容+评论区）
+
 **如果脚本报错**：检查站点经验文件的「已知陷阱」，尝试更新选择器。脚本修复后追加发现到经验文件。
 
 ### Step 3: AI 分析兴趣度
@@ -79,20 +83,64 @@ node "${SKILL_DIR}/scripts/xhs-scraper.js" \
 
 ### Step 4: 生成 Excel
 
-使用 xlsx skill 生成表格，字段：
+AI 分析完成后，将筛选结果保存为 `data/analysis.json`，然后调用 Excel 生成脚本：
 
-| 字段 | 说明 |
-|------|------|
-| 序号 | 自增序号 |
-| 用户名 | 小红书昵称 |
-| 小红书号 | 用户 ID |
-| 头像链接 | 头像 URL |
-| 评论原文 | 完整评论内容 |
-| 来源帖子 | 帖子标题 + 链接 |
-| 兴趣标签 | AI 分析的兴趣标签 |
-| 兴趣得分 | 1-10 分 |
-| 判断理由 | AI 分析理由 |
-| 用户主页链接 | 拼接的主页 URL |
+```bash
+node "${SKILL_DIR}/scripts/generate-excel.js" \
+  --input "${SKILL_DIR}/data/analysis.json"
+```
+
+**analysis.json 格式**（由 Claude 在 Step 3 后生成，按帖子分组）：
+```json
+{
+  "keyword": "医美",
+  "posts": [
+    {
+      "title": "帖子标题",
+      "url": "帖子链接",
+      "screenshotFile": "/abs/path/to/screenshot.png",
+      "totalComments": 15,
+      "collectedComments": 10,
+      "validComments": [
+        {
+          "username": "xxx", "userId": "xxx",
+          "content": "评论原文",
+          "ipLocation": "广东",
+          "interestTags": "购买意向, 咨询",
+          "interestScore": 7,
+          "reason": "判断理由",
+          "profileUrl": "用户主页链接"
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Excel 布局**（用户×帖子为中心，16列潜客管理表）：
+
+行粒度：一行 = 一个用户在一个帖子下。同一用户同帖子多条评论用编号合并（①xxx ②xxx 分行展示）。
+
+| 区域 | 列 | 说明 |
+|------|-----|------|
+| 用户信息 | 用户名 | 小红书昵称 |
+| 用户信息 | 用户主页链接 | 可点击跳转 |
+| 用户信息 | IP属地 | 筛选本地用户 |
+| 兴趣分析 | 评论数量 | 该用户在此帖的评论数 |
+| 兴趣分析 | 评论内容 | 编号分行合并 |
+| 兴趣分析 | 兴趣得分 | 1-10 分（>=8 绿色，>=6 黄色） |
+| 兴趣分析 | 兴趣标签 | AI 标签 |
+| 兴趣分析 | 判断理由 | AI 理由 |
+| 来源帖子 | 帖子标题 | 帖子标题 |
+| 来源帖子 | 帖子链接 | 帖子 URL |
+| 来源帖子 | 帖子截图 | 嵌入截图 |
+| 来源帖子 | 帖子总评论数 | 该帖子评论总数 |
+| 来源帖子 | 本次获取评论数 | 本次采集到的评论数 |
+| 跟进管理 | 已关注 | 是/否（下拉选择） |
+| 跟进管理 | 跟进状态 | 待跟进/已联系/有意向/已成交/已流失（下拉选择） |
+| 跟进管理 | 负责人 | 团队成员姓名 |
+
+4区域分色表头（蓝/绿/金/红），帖子间交替背景色，自动筛选启用。
 
 **输出路径**: `<SKILL_DIR>/output/xhs-<keyword>-<YYYYMMDD>.xlsx`
 

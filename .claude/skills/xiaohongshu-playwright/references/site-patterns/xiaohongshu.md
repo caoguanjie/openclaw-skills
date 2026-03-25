@@ -34,3 +34,11 @@ updated: 2026-03-24
 - 2026-03-24: cookie 中的 `expires` 字段为 Unix 时间戳（秒），加载前需过滤过期条目
 - 2026-03-24: 搜索结果中同一帖子可能出现多个不同格式的链接，提取时需按 URL 去重
 - 2026-03-24: 无头模式下 cookie 失效无法弹出登录界面，需退回有头模式重新登录
+- 2026-03-24: 搜索结果帖子 URL 格式为 `/search_result/{noteId}?xsec_token=...`，点击后会跳转到详情页
+- 2026-03-24: 大部分帖子评论区提取到 0 条评论，可能是评论区延迟加载或选择器未命中，需增加等待时间和滚动次数
+- 2026-03-24: 提取到的评论多为"回复 xxx : "格式，说明采集到的是回复而非顶层评论，选择器可能需调整以区分层级
+- 2026-03-24: 不同用户名可能共享同一个 userId（采集 bug），可能是用户链接提取位置不对，取了上一级元素的链接
+- 2026-03-25: cookie 对 /explore 页面有效但搜索页 /search_result 仍会弹出登录弹窗，需在 searchPosts 函数中单独检测并等待登录
+- 2026-03-25: window.__INITIAL_STATE__.note.noteDetailMap[feedId] 包含完整评论数据（含 userInfo.userId、ipLocation、subComments），比 DOM 抓取更可靠
+- 2026-03-25: 评论区稳定选择器：.comments-container（容器）、.parent-comment（主评论）、.show-more（展开回复）、.end-container（底部THE END）、.no-comments-text（无评论）
+- 2026-03-25: 检测到 THE END 后从 __INITIAL_STATE__ 提取数据，帖子总评论数在 note.interactInfo.commentCount 字段
