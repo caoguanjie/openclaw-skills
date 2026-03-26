@@ -1,7 +1,7 @@
 ---
 domain: xiaohongshu.com
 aliases: [小红书, XHS, RED]
-updated: 2026-03-24
+updated: 2026-03-25
 ---
 
 ## 平台特征
@@ -33,7 +33,10 @@ updated: 2026-03-24
 - 2026-03-24: `page.pause()` 需要 `PWDEBUG=1` 环境变量才能弹出 Playwright Inspector，不可靠作为登录等待方案
 - 2026-03-24: cookie 中的 `expires` 字段为 Unix 时间戳（秒），加载前需过滤过期条目
 - 2026-03-24: 搜索结果中同一帖子可能出现多个不同格式的链接，提取时需按 URL 去重
-- 2026-03-24: 无头模式下 cookie 失效无法弹出登录界面，需退回有头模式重新登录
+- 2026-03-25: 登录 QR 码选择器 `.qrcode-img`，img src 为 `data:image/png;base64,...` 格式，可通过 DOM 提取实现无头登录
+- 2026-03-25: 无头 QR 登录流程：page.evaluate 提取 .qrcode-img 的 src → 解码 base64 → 保存 PNG → 系统程序打开 → 轮询登录状态
+- 2026-03-25: ~~无头模式下 cookie 失效无法弹出登录界面，需退回有头模式重新登录~~（已通过 DOM QR 提取方案解决）
+- 2026-03-25: 跨平台打开文件：Windows `cmd /c start`、macOS `open`、Linux `xdg-open`
 - 2026-03-24: 搜索结果帖子 URL 格式为 `/search_result/{noteId}?xsec_token=...`，点击后会跳转到详情页
 - 2026-03-24: 大部分帖子评论区提取到 0 条评论，可能是评论区延迟加载或选择器未命中，需增加等待时间和滚动次数
 - 2026-03-24: 提取到的评论多为"回复 xxx : "格式，说明采集到的是回复而非顶层评论，选择器可能需调整以区分层级

@@ -5,7 +5,7 @@
  *
  * 用法:
  *   node xhs-scraper.js --keyword "护肤" --max-posts 5 --max-comments 20
- *   node xhs-scraper.js --keyword "医美" --headless  # 有 cookie 时无头运行
+ *   node xhs-scraper.js --keyword "医美" --headless  # 无头运行（首次会弹出 QR 码图片供扫码）
  *
  * 输出: JSON 文件包含帖子及其评论数据
  */
@@ -61,6 +61,22 @@ function randomDelay(min = 1000, max = 3000) {
   return new Promise((r) =>
     setTimeout(r, min + Math.random() * (max - min))
   );
+}
+
+// 跨平台打开文件（参考 Python cli.py:84-103 _open_file_if_display）
+function openFile(filePath) {
+  const { spawn } = require("child_process");
+  try {
+    if (process.platform === "win32") {
+      spawn("cmd", ["/c", "start", "", filePath], { stdio: "ignore" });
+    } else if (process.platform === "darwin") {
+      spawn("open", [filePath], { stdio: "ignore" });
+    } else {
+      spawn("xdg-open", [filePath], { stdio: "ignore" });
+    }
+  } catch {
+    // 静默失败，文件路径已打印到终端供用户手动打开
+  }
 }
 
 // ─── Playwright 浏览器安装检查 ───
@@ -160,18 +176,46 @@ async function checkLogin(page) {
   }
 }
 
-// ─── 手动登录流程（基于 URL 变化检测，不依赖 page.pause） ───
+// ─── 手动登录流程（无头兼容：从 DOM 提取 QR 码图片 → 本地展示 → 轮询登录） ───
 async function manualLogin(page, context, cookiePath) {
   console.log("\n⚠️  需要登录小红书");
-  console.log("📱 请在弹出的浏览器中完成登录（扫码或手机号）");
-  console.log("⏳ 登录完成后脚本会自动继续...\n");
 
   await page.goto("https://www.xiaohongshu.com/explore", {
     waitUntil: "domcontentloaded",
   });
+  await randomDelay(2000, 3000);
 
-  // 等待用户登录完成：轮询检测登录状态
-  // 最多等待 5 分钟
+  // 尝试从 DOM 提取 QR 码图片（参考 Python login.py:130-143, selectors.py:5）
+  let qrExtracted = false;
+  try {
+    await page.waitForSelector(".qrcode-img", { timeout: 15000 });
+    const qrSrc = await page.evaluate(() => {
+      const img = document.querySelector(".qrcode-img");
+      return img?.src || "";
+    });
+
+    if (qrSrc && qrSrc.includes("base64,")) {
+      const base64Data = qrSrc.split("base64,")[1];
+      const qrDir = path.join(__dirname, "..", "data");
+      if (!fs.existsSync(qrDir)) fs.mkdirSync(qrDir, { recursive: true });
+      const qrPath = path.join(qrDir, "login_qrcode.png");
+      fs.writeFileSync(qrPath, Buffer.from(base64Data, "base64"));
+
+      console.log(`📱 QR 码已保存: ${qrPath}`);
+      console.log("⏳ 请用小红书 APP 扫描二维码登录...\n");
+      openFile(qrPath);
+      qrExtracted = true;
+    }
+  } catch {
+    console.warn("⚠️  QR 码提取失败，请在浏览器中手动登录");
+  }
+
+  if (!qrExtracted) {
+    console.log("📱 请在浏览器中完成登录（扫码或手机号）");
+    console.log("⏳ 登录完成后脚本会自动继续...\n");
+  }
+
+  // 轮询检测登录状态，最多等待 5 分钟
   const maxWait = 5 * 60 * 1000;
   const pollInterval = 3000;
   const startTime = Date.now();
@@ -198,7 +242,7 @@ async function manualLogin(page, context, cookiePath) {
     }
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);
-    process.stdout.write(`\r⏳ 已等待 ${elapsed}s，请在浏览器中完成登录...`);
+    process.stdout.write(`\r⏳ 已等待 ${elapsed}s，请扫码登录...`);
   }
 
   if (Date.now() - startTime >= maxWait) {
@@ -641,22 +685,8 @@ async function main() {
   // 检查浏览器是否已安装
   await ensureBrowserInstalled();
 
-  // 决定是否 headless: 有 cookie 且指定了 --headless 才用无头
-  const hasCookieFile =
-    fs.existsSync(opts.cookiePath) &&
-    (() => {
-      try {
-        const c = JSON.parse(fs.readFileSync(opts.cookiePath, "utf-8"));
-        return Array.isArray(c) && c.length > 0;
-      } catch {
-        return false;
-      }
-    })();
-
-  const useHeadless = opts.headless && hasCookieFile;
-  if (opts.headless && !hasCookieFile) {
-    console.warn("⚠️  无 cookie 文件，忽略 --headless，将打开浏览器供登录");
-  }
+  // --headless 时始终无头启动（无 cookie 时通过 DOM 提取 QR 码供本地扫码）
+  const useHeadless = opts.headless;
 
   const browser = await chromium.launch({
     headless: useHeadless,
@@ -677,11 +707,6 @@ async function main() {
     const isLoggedIn = hasCookies && (await checkLogin(page));
 
     if (!isLoggedIn) {
-      if (useHeadless) {
-        // 无头模式下 cookie 失效 → 需要重新有头登录
-        console.error("❌ Cookie 已失效，请去掉 --headless 重新登录");
-        process.exit(1);
-      }
       await manualLogin(page, context, opts.cookiePath);
     } else {
       console.log("✅ 已登录");

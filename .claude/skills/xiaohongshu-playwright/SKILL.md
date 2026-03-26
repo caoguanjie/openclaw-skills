@@ -11,7 +11,9 @@ description: 小红书评论分析与精准用户挖掘 skill（基于 Playwrigh
 
 - Node.js 22+
 - Playwright（`npx playwright` 或全局安装）
-- xlsx skill（生成 Excel）
+- exceljs（`npm install exceljs`，generate-excel.js 使用）
+
+> ⚠️ 执行前必须读取 `references/execution-checklist.md`，每个 Step 完成后逐项确认。
 
 ## 触发方式
 
@@ -51,7 +53,7 @@ node "${SKILL_DIR}/scripts/xhs-scraper.js" \
   --output "${SKILL_DIR}/data/comments.json"
 ```
 
-**登录机制**: 首次运行会打开浏览器并导航到登录页，脚本等待用户完成登录（检测 URL 变化），登录后自动保存 cookie。后续运行自动复用 cookie，可加 `--headless` 参数以无头模式运行。
+**登录机制**: 支持全程无头运行。首次运行时脚本从 DOM 提取登录 QR 码图片并用系统默认程序打开（跨平台：Windows/macOS/Linux），用户扫码后自动检测登录完成并保存 cookie。后续运行自动复用 cookie。加 `--headless` 参数以无头模式运行，无论是否有 cookie 均可无头启动。
 
 **输出产物**:
 - `data/comments.json` — 帖子和评论数据
@@ -59,9 +61,34 @@ node "${SKILL_DIR}/scripts/xhs-scraper.js" \
 
 **如果脚本报错**：检查站点经验文件的「已知陷阱」，尝试更新选择器。脚本修复后追加发现到经验文件。
 
-### Step 3: AI 分析兴趣度
+### Step 2.5: 验证帖子相关性
 
-读取 `data/comments.json`，对每条评论进行三重判断：
+采集完成后、分析之前，验证每篇帖子是否真的与搜索关键词相关：
+
+1. 读取 `data/comments.json`，检查每篇帖子的 `title` 字段
+2. 抽样检查前 10 条评论内容，判断话题是否与关键词一致
+3. **如果帖子内容明显偏离关键词**（如标题含关键词但评论全是无关内容），标记为「不相关」并在后续分析中跳过
+4. 在最终报告中说明跳过原因
+
+> 此步骤由 Claude 直接判断，不需要脚本。目的是防止标题党帖子浪费分析资源。
+
+### Step 3: AI 分析兴趣度（两阶段）
+
+#### 阶段 A: 脚本粗筛
+
+运行粗筛脚本，过滤明确噪声（作者回复、纯表情、广告），保留所有可能有价值的评论：
+
+```bash
+node "${SKILL_DIR}/scripts/filter-comments.js" \
+  --input "${SKILL_DIR}/data/comments.json" \
+  --output "${SKILL_DIR}/data/filtered-comments.json"
+```
+
+粗筛只去噪声，**不做兴趣度判断**，确保不遗漏潜在用户。
+
+#### 阶段 B: Claude 语义精筛
+
+读取 `data/filtered-comments.json`，**逐帖按批**对每条评论进行三重判断：
 
 **1. 购买/合作意向**（关键词匹配）
 - "怎么买""求链接""多少钱""在哪买""想入手""求推荐""有链接吗""怎么购买"
@@ -83,9 +110,13 @@ node "${SKILL_DIR}/scripts/xhs-scraper.js" \
 
 ### Step 4: 生成 Excel
 
+> ⚠️ **必须调用 `generate-excel.js` 脚本生成 Excel，禁止手写替代代码。**
+> 该脚本已实现完整 16 列布局、帖子截图嵌入、条件格式、下拉选择等功能。
+
 AI 分析完成后，将筛选结果保存为 `data/analysis.json`，然后调用 Excel 生成脚本：
 
 ```bash
+cd "${SKILL_DIR}" && npm install exceljs --save 2>/dev/null
 node "${SKILL_DIR}/scripts/generate-excel.js" \
   --input "${SKILL_DIR}/data/analysis.json"
 ```
