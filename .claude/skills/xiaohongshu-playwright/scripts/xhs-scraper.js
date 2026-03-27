@@ -1,29 +1,49 @@
 #!/usr/bin/env node
 
 /**
- * 小红书评论采集脚本 - 基于 Playwright
+ * 小红书评论采集脚本 - 基于 Playwright + 人类化行为模拟
  *
  * 用法:
  *   node xhs-scraper.js --keyword "护肤" --max-posts 5 --max-comments 20
- *   node xhs-scraper.js --keyword "医美" --headless  # 无头运行（首次会弹出 QR 码图片供扫码）
+ *   node xhs-scraper.js --keyword "医美" --speed slow     # 慢速模式，更安全
+ *   node xhs-scraper.js --keyword "医美" --headed          # 有头模式（调试用）
  *
  * 输出: JSON 文件包含帖子及其评论数据
  */
 
+// rebrowser-patches: 修复 CDP leak、navigator.webdriver 等反检测
+try {
+  require("rebrowser-patches/patch");
+} catch {
+  // rebrowser-patches 未安装时静默降级
+}
+
 const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
+const {
+  CONFIG,
+  DELAYS,
+  sleepRandom,
+  navigationDelay,
+  getScrollInterval,
+  getScrollRatio,
+  calculateScrollDelta,
+  randomUserAgent,
+  randomInt,
+} = require("./human");
 
 // ─── CLI 参数解析 ───
 function parseArgs() {
   const args = process.argv.slice(2);
   const opts = {
     keyword: "",
-    maxComments: 20,
-    maxPosts: 5,
-    headless: false,
+    maxComments: 0, // 0 = 获取全部（硬上限 500）
+    maxPosts: 10,
+    headed: false, // 默认无头
+    speed: "normal", // slow | normal | fast
     cookiePath: path.join(__dirname, "..", "data", "cookies.json"),
-    output: path.join(__dirname, "..", "data", "comments.json"),
+    output: "", // 默认为空，解析完 keyword 后自动生成
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -37,8 +57,11 @@ function parseArgs() {
       case "--max-posts":
         opts.maxPosts = parseInt(args[++i], 10);
         break;
-      case "--headless":
-        opts.headless = true;
+      case "--headed":
+        opts.headed = true;
+        break;
+      case "--speed":
+        opts.speed = args[++i] || "normal";
         break;
       case "--cookie-path":
         opts.cookiePath = args[++i];
@@ -53,17 +76,19 @@ function parseArgs() {
     console.error("错误: --keyword 为必填参数");
     process.exit(1);
   }
+
+  // 默认输出路径按关键字分文件
+  if (!opts.output) {
+    opts.output = path.join(__dirname, "..", "data", `comments_${opts.keyword}.json`);
+  }
+  if (!["slow", "normal", "fast"].includes(opts.speed)) {
+    console.warn(`未知速度 "${opts.speed}"，使用默认 normal`);
+    opts.speed = "normal";
+  }
   return opts;
 }
 
-// ─── 工具函数 ───
-function randomDelay(min = 1000, max = 3000) {
-  return new Promise((r) =>
-    setTimeout(r, min + Math.random() * (max - min))
-  );
-}
-
-// 跨平台打开文件（参考 Python cli.py:84-103 _open_file_if_display）
+// ─── 跨平台打开文件 ───
 function openFile(filePath) {
   const { spawn } = require("child_process");
   try {
@@ -93,9 +118,86 @@ async function ensureBrowserInstalled() {
       console.error("   请运行: npx playwright install chromium");
       process.exit(1);
     }
-    // 其他错误让它继续，可能是临时问题
   }
 }
+
+// ─── 反检测初始化脚本 ───
+const ANTI_DETECT_SCRIPT = `
+(() => {
+  // 隐藏 webdriver 标志（rebrowser-patches 可能已处理，这里兜底）
+  try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  } catch {}
+
+  // 伪装 plugins（真实浏览器有多个插件）
+  try {
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => {
+        const plugins = [
+          { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+          { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+          { name: 'Native Client', filename: 'internal-nacl-plugin' },
+        ];
+        plugins.length = 3;
+        return plugins;
+      },
+    });
+  } catch {}
+
+  // 伪装 languages
+  try {
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['zh-CN', 'zh', 'en-US', 'en'],
+    });
+  } catch {}
+
+  // 伪装 platform
+  try {
+    Object.defineProperty(navigator, 'platform', {
+      get: () => 'MacIntel',
+    });
+  } catch {}
+
+  // 伪装 hardwareConcurrency
+  try {
+    Object.defineProperty(navigator, 'hardwareConcurrency', {
+      get: () => 8,
+    });
+  } catch {}
+
+  // 伪装 deviceMemory
+  try {
+    Object.defineProperty(navigator, 'deviceMemory', {
+      get: () => 8,
+    });
+  } catch {}
+
+  // 隐藏 Automation 相关属性
+  try {
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+    delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+  } catch {}
+
+  // 修复 chrome.runtime（Playwright 缺失）
+  if (!window.chrome) window.chrome = {};
+  if (!window.chrome.runtime) {
+    window.chrome.runtime = {
+      connect: () => {},
+      sendMessage: () => {},
+    };
+  }
+
+  // 修复 Permissions API（避免返回 "denied" 暴露自动化）
+  try {
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) =>
+      parameters.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission })
+        : originalQuery(parameters);
+  } catch {}
+})();
+`;
 
 // ─── Cookie 管理 ───
 async function loadCookies(context, cookiePath) {
@@ -103,7 +205,6 @@ async function loadCookies(context, cookiePath) {
     try {
       const cookies = JSON.parse(fs.readFileSync(cookiePath, "utf-8"));
       if (Array.isArray(cookies) && cookies.length > 0) {
-        // 过滤掉明显过期的 cookie
         const now = Date.now() / 1000;
         const valid = cookies.filter(
           (c) => !c.expires || c.expires === -1 || c.expires > now
@@ -137,24 +238,17 @@ async function checkLogin(page) {
       waitUntil: "domcontentloaded",
       timeout: 15000,
     });
-    await randomDelay(2000, 3000);
+    await sleepRandom(...DELAYS.READ_TIME);
 
     const isLoggedIn = await page.evaluate(() => {
-      // 策略1: 检查 cookie 中是否有用户标识
       const hasCookieUser = document.cookie.includes("customer_id") ||
                             document.cookie.includes("access-token");
-
-      // 策略2: 检查页面是否有登录弹窗
       const hasLoginModal = !!document.querySelector(
         ".login-container, [class*='login-modal'], [class*='LoginModal']"
       );
-
-      // 策略3: 检查是否有已登录用户元素
       const hasUserEl = !!document.querySelector(
         "[class*='user-avatar'], .reds-avatar, [class*='sidebar-user']"
       );
-
-      // 策略4: 检查 __INITIAL_STATE__ 是否有用户信息
       let hasStateUser = false;
       try {
         const state = window.__INITIAL_STATE__;
@@ -163,9 +257,7 @@ async function checkLogin(page) {
         }
       } catch {}
 
-      // 有登录弹窗 → 未登录
       if (hasLoginModal) return false;
-      // cookie 或 state 或 DOM 任一有用户标识 → 已登录
       return hasCookieUser || hasStateUser || hasUserEl;
     });
 
@@ -183,9 +275,8 @@ async function manualLogin(page, context, cookiePath) {
   await page.goto("https://www.xiaohongshu.com/explore", {
     waitUntil: "domcontentloaded",
   });
-  await randomDelay(2000, 3000);
+  await navigationDelay();
 
-  // 尝试从 DOM 提取 QR 码图片（参考 Python login.py:130-143, selectors.py:5）
   let qrExtracted = false;
   try {
     await page.waitForSelector(".qrcode-img", { timeout: 15000 });
@@ -215,7 +306,6 @@ async function manualLogin(page, context, cookiePath) {
     console.log("⏳ 登录完成后脚本会自动继续...\n");
   }
 
-  // 轮询检测登录状态，最多等待 5 分钟
   const maxWait = 5 * 60 * 1000;
   const pollInterval = 3000;
   const startTime = Date.now();
@@ -232,14 +322,10 @@ async function manualLogin(page, context, cookiePath) {
       const hasUserEl = !!document.querySelector(
         "[class*='user-avatar'], .reds-avatar, [class*='sidebar-user']"
       );
-
-      // 没有登录弹窗 + 有用户标识
       return !hasLoginModal && (hasCookieUser || hasUserEl);
     });
 
-    if (loggedIn) {
-      break;
-    }
+    if (loggedIn) break;
 
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     process.stdout.write(`\r⏳ 已等待 ${elapsed}s，请扫码登录...`);
@@ -250,8 +336,7 @@ async function manualLogin(page, context, cookiePath) {
     process.exit(1);
   }
 
-  // 登录完成后额外等待页面稳定
-  await randomDelay(2000, 3000);
+  await navigationDelay();
   await saveCookies(context, cookiePath);
   console.log("\n✅ 登录成功，cookie 已保存");
 }
@@ -262,9 +347,10 @@ async function searchPosts(page, keyword, maxPosts, context, cookiePath) {
   console.log(`🔍 搜索关键词: ${keyword}`);
 
   await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
-  await randomDelay(3000, 5000);
+  await navigationDelay();
+  await sleepRandom(...DELAYS.READ_TIME);
 
-  // 检查搜索页是否有登录弹窗（cookie 可能对 explore 有效但对搜索页失效）
+  // 检查搜索页是否有登录弹窗
   const hasModal = await page.evaluate(() => {
     return !!document.querySelector(".login-container, [class*='login-modal'], [class*='LoginModal']");
   });
@@ -288,7 +374,7 @@ async function searchPosts(page, keyword, maxPosts, context, cookiePath) {
     }
     console.log("\n✅ 登录完成");
     await saveCookies(context, cookiePath);
-    await randomDelay(2000, 3000);
+    await navigationDelay();
   }
 
   // 等待搜索结果加载
@@ -301,9 +387,10 @@ async function searchPosts(page, keyword, maxPosts, context, cookiePath) {
     console.warn("搜索结果加载超时，尝试继续...");
   }
 
-  await randomDelay(1000, 2000);
+  await sleepRandom(...DELAYS.HUMAN_DELAY);
 
-  // 提取帖子列表（带去重）
+  // 提取帖子列表（带去重，加载 2x 候选以支持混合选取）
+  const candidateLimit = maxPosts * 2;
   const posts = await page.evaluate((max) => {
     const items = [];
     const seenUrls = new Set();
@@ -347,16 +434,27 @@ async function searchPosts(page, keyword, maxPosts, context, cookiePath) {
       }
     }
     return items;
-  }, maxPosts);
+  }, candidateLimit);
 
-  console.log(`📋 找到 ${posts.length} 篇帖子`);
-  return posts.slice(0, maxPosts);
+  console.log(`📋 找到 ${posts.length} 篇候选帖子`);
+
+  // 50/50 混合选取策略：前半顺序 + 后半随机
+  const halfN = Math.ceil(maxPosts / 2);
+  const sequential = posts.slice(0, halfN);
+  const remaining = posts.slice(halfN);
+  // Fisher-Yates shuffle
+  for (let j = remaining.length - 1; j > 0; j--) {
+    const k = Math.floor(Math.random() * (j + 1));
+    [remaining[j], remaining[k]] = [remaining[k], remaining[j]];
+  }
+  const selected = [...sequential, ...remaining].slice(0, maxPosts);
+  console.log(`📋 选取 ${selected.length} 篇帖子（前 ${Math.min(halfN, selected.length)} 顺序 + 后 ${Math.max(0, selected.length - halfN)} 随机）`);
+  return selected;
 }
 
 // ─── 关闭弹窗覆盖层（通用） ───
 async function dismissOverlays(page) {
   try {
-    // 尝试关闭各种弹窗
     const overlaySelectors = [
       '[class*="close-button"]',
       '[class*="CloseBtn"]',
@@ -369,7 +467,7 @@ async function dismissOverlays(page) {
         const isVisible = await btn.isVisible().catch(() => false);
         if (isVisible) {
           await btn.click();
-          await randomDelay(500, 1000);
+          await sleepRandom(...DELAYS.REACTION_TIME);
         }
       }
     }
@@ -377,11 +475,6 @@ async function dismissOverlays(page) {
 }
 
 // ─── 从 __INITIAL_STATE__ 提取帖子详情和评论 ───
-// 参考 xiaohongshu-skills/scripts/xhs/feed_detail.py 的实现思路：
-// 小红书前端将所有数据存储在 window.__INITIAL_STATE__.note.noteDetailMap 中，
-// 滚动页面触发前端加载更多评论时，该 state 会同步更新。
-// 比 DOM 抓取和 API 拦截都更可靠、更完整。
-
 const EXTRACT_DETAIL_JS = `
 (() => {
   try {
@@ -395,7 +488,6 @@ const EXTRACT_DETAIL_JS = `
 `;
 
 function parseStateComments(noteDetailMap, feedId) {
-  // 找到对应 feedId 的数据，如果 feedId 未知则取第一个
   let noteData = noteDetailMap[feedId];
   if (!noteData) {
     const keys = Object.keys(noteDetailMap);
@@ -403,7 +495,6 @@ function parseStateComments(noteDetailMap, feedId) {
   }
   if (!noteData) return { note: null, comments: [] };
 
-  // 提取帖子信息
   const rawNote = noteData.note || {};
   const note = {
     title: rawNote.title || "",
@@ -417,7 +508,6 @@ function parseStateComments(noteDetailMap, feedId) {
     collectedCount: rawNote.interactInfo?.collectedCount || "0",
   };
 
-  // 提取评论列表
   const rawComments = noteData.comments?.list || [];
   const comments = [];
 
@@ -456,12 +546,259 @@ function parseStateComments(noteDetailMap, feedId) {
   return { note, comments };
 }
 
+// ─── 人类化滚动（对应 Python feed_detail.py: _human_scroll） ───
+async function humanScroll(page, speed, largeMode, pushCount) {
+  const beforeTop = await page.evaluate(() => window.scrollY || document.documentElement.scrollTop);
+  const viewportHeight = await page.evaluate(() => window.innerHeight);
+
+  let baseRatio = getScrollRatio(speed);
+  if (largeMode) {
+    baseRatio *= 2.0;
+  }
+
+  let actualDelta = 0;
+  let currentScrollTop = beforeTop;
+  let prevTop = beforeTop;
+
+  for (let i = 0; i < Math.max(1, pushCount); i++) {
+    const scrollDelta = calculateScrollDelta(viewportHeight, baseRatio);
+
+    // 使用 window.scrollBy 替代 page.mouse.wheel（更接近真实用户行为）
+    await page.evaluate((delta) => {
+      window.scrollBy({ top: delta, behavior: "smooth" });
+    }, Math.round(scrollDelta));
+
+    await sleepRandom(...DELAYS.SCROLL_WAIT);
+
+    currentScrollTop = await page.evaluate(() => window.scrollY || document.documentElement.scrollTop);
+    const deltaThis = currentScrollTop - prevTop;
+    actualDelta += deltaThis;
+    prevTop = currentScrollTop;
+
+    if (i < pushCount - 1) {
+      await sleepRandom(...DELAYS.HUMAN_DELAY);
+    }
+  }
+
+  // 如果没有滚动，强制到底部
+  if (actualDelta < CONFIG.MIN_SCROLL_DELTA && pushCount > 0) {
+    await page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+    });
+    await sleepRandom(...DELAYS.POST_SCROLL);
+    currentScrollTop = await page.evaluate(() => window.scrollY || document.documentElement.scrollTop);
+    actualDelta = currentScrollTop - beforeTop;
+  }
+
+  return { actualDelta, currentScrollTop };
+}
+
+// ─── 滚动到评论区（对应 Python feed_detail.py: _scroll_to_comments_area） ───
+async function scrollToCommentsArea(page) {
+  console.log("  📜 滚动到评论区...");
+  await page.evaluate(() => {
+    const container = document.querySelector(".comments-container");
+    if (container) container.scrollIntoView({ behavior: "smooth" });
+  });
+  await sleepRandom(500, 1000);
+
+  // 触发 wheel 事件以激活懒加载（参考 Python dispatch_wheel_event）
+  await page.evaluate(() => {
+    window.dispatchEvent(new WheelEvent("wheel", {
+      deltaY: 100,
+      bubbles: true,
+    }));
+  });
+}
+
+// ─── 滚动到最后一条评论（对应 Python feed_detail.py: _scroll_to_last_comment） ───
+async function scrollToLastComment(page) {
+  await page.evaluate(() => {
+    const comments = document.querySelectorAll(".parent-comment");
+    if (comments.length > 0) {
+      comments[comments.length - 1].scrollIntoView({ behavior: "smooth" });
+    }
+  });
+}
+
+// ─── 点击展开回复按钮（对应 Python feed_detail.py: _click_show_more_buttons） ───
+async function clickShowMoreButtons(page, maxRepliesThreshold = 50) {
+  const result = await page.evaluate((threshold) => {
+    const btns = document.querySelectorAll(".show-more");
+    let clicked = 0;
+    let skipped = 0;
+    btns.forEach((btn) => {
+      const text = btn.textContent || "";
+      const match = text.match(/展开\s*(\d+)\s*条回复/);
+      if (match && parseInt(match[1], 10) > threshold) {
+        skipped++;
+        return;
+      }
+      btn.click();
+      clicked++;
+    });
+    return { clicked, skipped };
+  }, maxRepliesThreshold);
+  return result;
+}
+
+// ─── 检查评论数 ───
+async function getCommentCount(page) {
+  return page.evaluate(() => document.querySelectorAll(".parent-comment").length);
+}
+
+// ─── 检查是否到达底部 ───
+async function checkEndContainer(page) {
+  return page.evaluate(() => {
+    const el = document.querySelector(".end-container");
+    if (!el) return false;
+    const text = el.textContent.trim().toUpperCase();
+    return text.includes("THE END") || text.includes("THEEND");
+  });
+}
+
+// ─── 加载已有采集数据（帖子级去重） ───
+function loadExistingData(outputPath, keyword) {
+  if (!fs.existsSync(outputPath)) {
+    return { existingPosts: [], collectedUrls: new Set() };
+  }
+  try {
+    const data = JSON.parse(fs.readFileSync(outputPath, "utf-8"));
+    // 只匹配同关键词的数据
+    if (data.keyword !== keyword) {
+      console.log(`📂 已有数据关键词不匹配（"${data.keyword}" vs "${keyword}"），不去重`);
+      return { existingPosts: [], collectedUrls: new Set() };
+    }
+    const existingPosts = data.posts || [];
+    const collectedUrls = new Set(existingPosts.map((p) => p.url));
+    console.log(`📂 已有 ${existingPosts.length} 篇帖子数据，将跳过已采集帖子`);
+    return { existingPosts, collectedUrls };
+  } catch (e) {
+    console.warn("读取已有数据失败:", e.message);
+    return { existingPosts: [], collectedUrls: new Set() };
+  }
+}
+
+// ─── 评论加载状态机（对应 Python feed_detail.py: _load_all_comments） ───
+async function loadAllComments(page, maxComments, speed) {
+  // 硬上限 500，防止极端情况
+  const effectiveMax = maxComments > 0
+    ? Math.min(maxComments, CONFIG.MAX_COMMENTS_HARD_LIMIT)
+    : CONFIG.MAX_COMMENTS_HARD_LIMIT;
+  const maxAttempts = effectiveMax * 3;
+  const scrollInterval = getScrollInterval(speed);
+
+  console.log("  📜 开始加载评论...");
+  await scrollToCommentsArea(page);
+  await sleepRandom(...DELAYS.HUMAN_DELAY);
+
+  // 检查是否无评论
+  const noComments = await page.evaluate(() => {
+    const el = document.querySelector(".no-comments-text");
+    return el ? el.textContent.includes("这是一片荒地") : false;
+  });
+  if (noComments) {
+    console.log("  ℹ️ 该帖子无评论");
+    return { hasComments: false };
+  }
+
+  let lastCount = 0;
+  let lastScrollTop = 0;
+  let stagnantChecks = 0;
+  let totalClicked = 0;
+  let totalSkipped = 0;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // 检查是否到达底部
+    if (await checkEndContainer(page)) {
+      const count = await getCommentCount(page);
+      console.log(`  ✅ 检测到 THE END，加载完成: ${count} 条评论, 点击: ${totalClicked}, 跳过: ${totalSkipped}`);
+      return { hasComments: true };
+    }
+
+    // 定期点击展开按钮（每 BUTTON_CLICK_INTERVAL 轮）
+    if (attempt % CONFIG.BUTTON_CLICK_INTERVAL === 0) {
+      const { clicked, skipped } = await clickShowMoreButtons(page);
+      totalClicked += clicked;
+      totalSkipped += skipped;
+      if (clicked > 0 || skipped > 0) {
+        await sleepRandom(...DELAYS.READ_TIME);
+        // 第二轮点击（参考 Python 实现）
+        const r2 = await clickShowMoreButtons(page);
+        totalClicked += r2.clicked;
+        totalSkipped += r2.skipped;
+        if (r2.clicked > 0 || r2.skipped > 0) {
+          await sleepRandom(...DELAYS.SHORT_READ);
+        }
+      }
+    }
+
+    // 获取当前评论数
+    const currentCount = await getCommentCount(page);
+    if (currentCount !== lastCount) {
+      if (attempt % 5 === 0 || currentCount - lastCount > 5) {
+        console.log(`  📊 评论增加: ${lastCount} -> ${currentCount}`);
+      }
+      lastCount = currentCount;
+      stagnantChecks = 0;
+    } else {
+      stagnantChecks++;
+    }
+
+    // 检查是否达到目标（含硬上限）
+    if (currentCount >= effectiveMax) {
+      console.log(`  ✅ 已达到目标评论数: ${currentCount}/${effectiveMax}`);
+      return { hasComments: true };
+    }
+
+    // 滚动到最后一条评论
+    if (currentCount > 0) {
+      await scrollToLastComment(page);
+      await sleepRandom(...DELAYS.POST_SCROLL);
+    }
+
+    // 计算 pushCount（参考 Python: large_mode 时 3+random(0,2)）
+    const largeMode = stagnantChecks >= CONFIG.LARGE_SCROLL_TRIGGER;
+    let pushCount = 1;
+    if (largeMode) {
+      pushCount = 3 + randomInt(0, 2);
+    }
+
+    const { actualDelta, currentScrollTop } = await humanScroll(page, speed, largeMode, pushCount);
+
+    if (actualDelta < CONFIG.MIN_SCROLL_DELTA || currentScrollTop === lastScrollTop) {
+      stagnantChecks++;
+    } else {
+      stagnantChecks = 0;
+      lastScrollTop = currentScrollTop;
+    }
+
+    // 停滞处理（参考 Python: STAGNANT_LIMIT 后大冲刺）
+    if (stagnantChecks >= CONFIG.STAGNANT_LIMIT) {
+      console.log("  ⚡ 停滞过多，尝试大冲刺...");
+      await humanScroll(page, speed, true, 10);
+      stagnantChecks = 0;
+    }
+
+    // 滚动间隔
+    await new Promise((r) => setTimeout(r, scrollInterval));
+  }
+
+  // 最终冲刺
+  console.log("  🏃 达到最大尝试次数，最后冲刺...");
+  await humanScroll(page, speed, true, CONFIG.FINAL_SPRINT_PUSH_COUNT);
+  const count = await getCommentCount(page);
+  console.log(`  📊 加载结束: ${count} 条评论, 点击: ${totalClicked}, 跳过: ${totalSkipped}`);
+  return { hasComments: count > 0 };
+}
+
 // ─── 提取单篇帖子评论（基于 __INITIAL_STATE__） ───
-async function extractComments(page, postUrl, maxComments) {
+async function extractComments(page, postUrl, maxComments, speed) {
   console.log(`  📖 打开帖子: ${postUrl}`);
 
   await page.goto(postUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
-  await randomDelay(2000, 4000);
+  await navigationDelay();
+  await sleepRandom(...DELAYS.HUMAN_DELAY);
 
   // 从 URL 提取 feedId
   const feedIdMatch = postUrl.match(/\/([a-f0-9]{24})\b/);
@@ -477,21 +814,17 @@ async function extractComments(page, postUrl, maxComments) {
     console.warn("  ⚠️ __INITIAL_STATE__ 加载超时");
   }
 
-  // 等待评论区容器出现（参考 selectors.py: COMMENTS_CONTAINER = ".comments-container"）
+  // 等待评论区容器出现
   try {
     await page.waitForSelector(".comments-container", { timeout: 8000 });
   } catch {
     console.warn("  ⚠️ 评论区加载超时");
   }
 
-  // 检查是否无评论（参考 selectors.py: NO_COMMENTS_TEXT）
-  const noComments = await page.evaluate(() => {
-    const el = document.querySelector(".no-comments-text");
-    return el ? el.textContent.includes("这是一片荒地") : false;
-  });
+  // 使用状态机加载评论
+  const { hasComments } = await loadAllComments(page, maxComments, speed);
 
-  if (noComments) {
-    console.log("  ℹ️ 该帖子无评论");
+  if (!hasComments) {
     const result = await page.evaluate(EXTRACT_DETAIL_JS);
     const noteDetailMap = result ? JSON.parse(result) : {};
     const { note } = parseStateComments(noteDetailMap, feedId);
@@ -504,109 +837,6 @@ async function extractComments(page, postUrl, maxComments) {
     };
   }
 
-  // 滚动加载全部评论（参考 feed_detail.py 的状态机逻辑）
-  // 先滚动到评论区（参考 selectors.py: COMMENTS_CONTAINER）
-  await page.evaluate(() => {
-    const container = document.querySelector(".comments-container");
-    if (container) container.scrollIntoView({ behavior: "smooth" });
-  });
-  await randomDelay(500, 1000);
-
-  const MAX_ATTEMPTS = maxComments > 0 ? maxComments * 3 : 150;
-  const STAGNANT_LIMIT = 8;
-  let lastCount = 0;
-  let stagnantChecks = 0;
-  let totalClicked = 0;
-
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    // 检查是否到达底部（参考 selectors.py: END_CONTAINER = ".end-container"）
-    const isEnd = await page.evaluate(() => {
-      const el = document.querySelector(".end-container");
-      if (!el) return false;
-      const text = el.textContent.trim().toUpperCase();
-      return text.includes("THE END") || text.includes("THEEND");
-    });
-
-    if (isEnd) {
-      const count = await page.evaluate(
-        () => document.querySelectorAll(".parent-comment").length
-      );
-      console.log(`  ✅ 已到达评论底部 THE END，共 ${count} 条一级评论`);
-      break;
-    }
-
-    // 定期点击"展开N条回复"按钮（参考 selectors.py: SHOW_MORE_BUTTON = ".show-more"）
-    if (attempt % 3 === 0) {
-      const clicked = await page.evaluate(() => {
-        const btns = document.querySelectorAll(".show-more");
-        let count = 0;
-        btns.forEach((btn) => {
-          // 跳过回复数 > 50 的按钮（避免展开太多导致卡顿）
-          const text = btn.textContent || "";
-          const match = text.match(/展开\s*(\d+)\s*条回复/);
-          if (match && parseInt(match[1], 10) > 50) return;
-          btn.click();
-          count++;
-        });
-        return count;
-      });
-      if (clicked > 0) {
-        totalClicked += clicked;
-        await randomDelay(800, 1500);
-      }
-    }
-
-    // 获取当前评论数（参考 selectors.py: PARENT_COMMENT = ".parent-comment"）
-    const currentCount = await page.evaluate(
-      () => document.querySelectorAll(".parent-comment").length
-    );
-
-    if (currentCount !== lastCount) {
-      if (attempt % 5 === 0 || currentCount - lastCount > 5) {
-        console.log(`  📊 评论加载中: ${currentCount} 条`);
-      }
-      lastCount = currentCount;
-      stagnantChecks = 0;
-    } else {
-      stagnantChecks++;
-    }
-
-    // 检查是否达到目标
-    if (maxComments > 0 && currentCount >= maxComments) {
-      console.log(`  ✅ 已达目标评论数: ${currentCount}/${maxComments}`);
-      break;
-    }
-
-    // 停滞过多 → 大冲刺滚动
-    if (stagnantChecks >= STAGNANT_LIMIT) {
-      console.log("  ⚡ 停滞过多，尝试大冲刺滚动...");
-      for (let j = 0; j < 10; j++) {
-        await page.mouse.wheel(0, 1000 + Math.random() * 500);
-        await randomDelay(200, 400);
-      }
-      stagnantChecks = 0;
-      await randomDelay(1000, 2000);
-      continue;
-    }
-
-    // 滚动到最后一条评论（参考 feed_detail.py: _scroll_to_last_comment）
-    if (currentCount > 0) {
-      await page.evaluate(() => {
-        const comments = document.querySelectorAll(".parent-comment");
-        if (comments.length > 0) {
-          comments[comments.length - 1].scrollIntoView({ behavior: "smooth" });
-        }
-      });
-    }
-
-    // 人类化滚动
-    const scrollDelta = 300 + Math.random() * 400;
-    await page.mouse.wheel(0, scrollDelta);
-    await randomDelay(800, 1500);
-  }
-
-  console.log(`  🔘 展开回复按钮点击: ${totalClicked} 次`);
-
   // 从 __INITIAL_STATE__ 一次性提取全部数据
   const stateResult = await page.evaluate(EXTRACT_DETAIL_JS);
   if (!stateResult) {
@@ -617,7 +847,7 @@ async function extractComments(page, postUrl, maxComments) {
   const noteDetailMap = JSON.parse(stateResult);
   const { note, comments } = parseStateComments(noteDetailMap, feedId);
 
-  // 展平: 主评论 + 子评论都作为独立条目（但保留层级标记）
+  // 展平: 主评论 + 子评论都作为独立条目
   const flatComments = [];
   for (const c of comments) {
     flatComments.push({
@@ -676,30 +906,38 @@ async function extractComments(page, postUrl, maxComments) {
 // ─── 主流程 ───
 async function main() {
   const opts = parseArgs();
-  console.log("🚀 小红书评论采集器启动");
+  console.log("🚀 小红书评论采集器启动（人类化模式）");
   console.log(`   关键词: ${opts.keyword}`);
   console.log(`   最大帖子数: ${opts.maxPosts}`);
-  console.log(`   每帖最大评论数: ${opts.maxComments}`);
-  console.log(`   运行模式: ${opts.headless ? "无头" : "有头"}`);
+  console.log(`   每帖最大评论数: ${opts.maxComments === 0 ? "全部（硬上限 500）" : opts.maxComments}`);
+  console.log(`   运行模式: ${opts.headed ? "有头" : "无头"}`);
+  console.log(`   滚动速度: ${opts.speed}`);
 
-  // 检查浏览器是否已安装
   await ensureBrowserInstalled();
 
-  // --headless 时始终无头启动（无 cookie 时通过 DOM 提取 QR 码供本地扫码）
-  const useHeadless = opts.headless;
-
   const browser = await chromium.launch({
-    headless: useHeadless,
-    args: ["--disable-blink-features=AutomationControlled"],
+    headless: !opts.headed,
+    args: [
+      "--disable-blink-features=AutomationControlled",
+      "--disable-features=IsolateOrigins,site-per-process",
+    ],
   });
 
+  // viewport 随机偏移，避免指纹固定
   const context = await browser.newContext({
-    viewport: { width: 1280, height: 800 },
-    userAgent:
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    viewport: {
+      width: 1280 + randomInt(-20, 20),
+      height: 800 + randomInt(-20, 20),
+    },
+    userAgent: randomUserAgent(),
+    locale: "zh-CN",
+    timezoneId: "Asia/Shanghai",
   });
 
   const page = await context.newPage();
+
+  // 注入反检测脚本
+  await page.addInitScript(ANTI_DETECT_SCRIPT);
 
   try {
     // 1. 加载 cookie + 检测登录态
@@ -712,20 +950,29 @@ async function main() {
       console.log("✅ 已登录");
     }
 
-    // 2. 搜索帖子
-    const posts = await searchPosts(page, opts.keyword, opts.maxPosts, context, opts.cookiePath);
+    // 2. 加载已有数据（帖子级去重）
+    const { existingPosts, collectedUrls } = loadExistingData(opts.output, opts.keyword);
 
-    if (posts.length === 0) {
+    // 3. 搜索帖子
+    const allPosts = await searchPosts(page, opts.keyword, opts.maxPosts, context, opts.cookiePath);
+
+    // 过滤已采集的帖子
+    const posts = allPosts.filter((p) => !collectedUrls.has(p.url));
+    if (collectedUrls.size > 0 && allPosts.length !== posts.length) {
+      console.log(`🔄 跳过 ${allPosts.length - posts.length} 篇已采集帖子，剩余 ${posts.length} 篇新帖子`);
+    }
+
+    if (posts.length === 0 && existingPosts.length === 0) {
       console.error("❌ 未找到任何帖子，请检查关键词或登录状态");
       process.exit(1);
     }
 
-    // 3. 逐篇提取评论
-    const result = {
-      keyword: opts.keyword,
-      scrapeTime: new Date().toISOString(),
-      posts: [],
-    };
+    if (posts.length === 0) {
+      console.log("ℹ️ 所有搜索结果已采集过，无需重复采集");
+    }
+
+    // 4. 逐篇提取评论
+    const newPosts = [];
 
     for (let i = 0; i < posts.length; i++) {
       console.log(`\n📌 [${i + 1}/${posts.length}] 处理帖子...`);
@@ -734,9 +981,10 @@ async function main() {
         const postData = await extractComments(
           page,
           posts[i].url,
-          opts.maxComments
+          opts.maxComments,
+          opts.speed
         );
-        result.posts.push({
+        newPosts.push({
           title: postData.title || posts[i].title,
           url: posts[i].url,
           author: postData.author || posts[i].author,
@@ -748,29 +996,37 @@ async function main() {
         console.error(`  ❌ 帖子处理失败: ${e.message}`);
       }
 
-      // 帖子间间隔 5-10 秒
+      // 帖子间间隔：navigationDelay + READ_TIME（比之前更自然）
       if (i < posts.length - 1) {
-        const wait = 5000 + Math.random() * 5000;
-        console.log(`  ⏱️ 等待 ${(wait / 1000).toFixed(1)}s...`);
-        await new Promise((r) => setTimeout(r, wait));
+        await navigationDelay();
+        await sleepRandom(...DELAYS.READ_TIME);
+        console.log(`  ⏱️ 帖子间等待完成`);
       }
     }
 
-    // 4. 保存输出
+    // 5. 合并已有数据 + 新数据，保存输出
+    const mergedPosts = [...existingPosts, ...newPosts];
+    const result = {
+      keyword: opts.keyword,
+      scrapeTime: new Date().toISOString(),
+      posts: mergedPosts,
+    };
+
     const outputDir = path.dirname(opts.output);
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
     fs.writeFileSync(opts.output, JSON.stringify(result, null, 2), "utf-8");
 
-    const totalComments = result.posts.reduce(
+    const totalComments = mergedPosts.reduce(
       (sum, p) => sum + p.comments.length,
       0
     );
     console.log(`\n✅ 采集完成!`);
-    console.log(`   帖子: ${result.posts.length}`);
-    console.log(`   评论: ${totalComments}`);
+    console.log(`   新采集帖子: ${newPosts.length}`);
+    console.log(`   已有帖子: ${existingPosts.length}`);
+    console.log(`   合计帖子: ${mergedPosts.length}`);
+    console.log(`   合计评论: ${totalComments}`);
     console.log(`   输出: ${opts.output}`);
 
-    // 保存最新 cookie
     await saveCookies(context, opts.cookiePath);
   } catch (e) {
     console.error("❌ 运行出错:", e.message);

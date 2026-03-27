@@ -45,3 +45,16 @@ updated: 2026-03-25
 - 2026-03-25: window.__INITIAL_STATE__.note.noteDetailMap[feedId] 包含完整评论数据（含 userInfo.userId、ipLocation、subComments），比 DOM 抓取更可靠
 - 2026-03-25: 评论区稳定选择器：.comments-container（容器）、.parent-comment（主评论）、.show-more（展开回复）、.end-container（底部THE END）、.no-comments-text（无评论）
 - 2026-03-25: 检测到 THE END 后从 __INITIAL_STATE__ 提取数据，帖子总评论数在 note.interactInfo.commentCount 字段
+- 2026-03-26: 人类化滚动使用 window.scrollBy({ behavior: "smooth" }) 替代 page.mouse.wheel，更接近真实用户行为
+- 2026-03-26: WheelEvent 派发 `new WheelEvent("wheel", { deltaY: 100, bubbles: true })` 可触发评论区懒加载
+- 2026-03-26: rebrowser-patches 修复 CDP Runtime.enable leak 和 navigator.webdriver 检测
+- 2026-03-26: viewport 随机偏移（±20px）+ UA 轮换可降低浏览器指纹固定风险
+- 2026-03-26: 多段推进滚动（multi-push）比单次大幅滚动更自然，停滞时渐进升级（5次→largeMode, 20次→大冲刺）
+
+## 用户习惯
+
+> 此段落由 AI 在首次运行时根据用户选择自动填写，后续运行自动读取。
+> 用户可随时说「切换到打开浏览器模式」或「切换到后台模式」来修改。
+
+- 运行模式: （未设置——首次使用时询问用户）
+- 设置时间: （未设置）

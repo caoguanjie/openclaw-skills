@@ -149,10 +149,12 @@ async function main() {
   const data = JSON.parse(fs.readFileSync(opts.input, "utf-8"));
 
   if (!opts.output) {
-    const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, "");
+    const timeStr = `${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}`;
     const outputDir = path.join(__dirname, "..", "output");
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-    opts.output = path.join(outputDir, `xhs-${data.keyword || "export"}-${date}.xlsx`);
+    opts.output = path.join(outputDir, `${data.keyword || "export"}_${dateStr}_${timeStr}.xlsx`);
   }
 
   const wb = new ExcelJS.Workbook();

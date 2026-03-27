@@ -20,12 +20,45 @@ const path = require("path");
 function parseArgs() {
   const args = process.argv.slice(2);
   const opts = {
-    input: path.join(__dirname, "..", "data", "comments.json"),
-    output: path.join(__dirname, "..", "data", "filtered-comments.json"),
+    input: "", // 默认为空，读取 keyword 后自动生成
+    output: "",
   };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--input") opts.input = args[++i];
     else if (args[i] === "--output") opts.output = args[++i];
+  }
+  return opts;
+}
+
+/**
+ * 根据输入文件中的 keyword 自动生成默认路径
+ * 输入: data/comments_{keyword}.json → 输出: data/filtered_{keyword}.json
+ */
+function resolveDefaultPaths(opts) {
+  const dataDir = path.join(__dirname, "..", "data");
+  if (!opts.input) {
+    // 没有指定输入，尝试找 data 目录下最新的 comments_*.json
+    const files = fs.readdirSync(dataDir).filter((f) => f.startsWith("comments_") && f.endsWith(".json"));
+    if (files.length === 1) {
+      opts.input = path.join(dataDir, files[0]);
+    } else if (files.length > 1) {
+      // 按修改时间取最新
+      files.sort((a, b) => fs.statSync(path.join(dataDir, b)).mtimeMs - fs.statSync(path.join(dataDir, a)).mtimeMs);
+      opts.input = path.join(dataDir, files[0]);
+    } else {
+      // fallback 到旧文件名
+      opts.input = path.join(dataDir, "comments.json");
+    }
+  }
+  if (!opts.output) {
+    // 从输入文件名推导输出文件名: comments_医美.json → filtered_医美.json
+    const inputBase = path.basename(opts.input);
+    const match = inputBase.match(/^comments_(.+)\.json$/);
+    if (match) {
+      opts.output = path.join(dataDir, `filtered_${match[1]}.json`);
+    } else {
+      opts.output = path.join(dataDir, "filtered-comments.json");
+    }
   }
   return opts;
 }
@@ -66,7 +99,7 @@ function isNoiseComment(content, authorName, username) {
 }
 
 function main() {
-  const opts = parseArgs();
+  const opts = resolveDefaultPaths(parseArgs());
   if (!fs.existsSync(opts.input)) {
     console.error(`❌ 输入文件不存在: ${opts.input}`);
     process.exit(1);

@@ -1,0 +1,147 @@
+/**
+ * 人类行为模拟参数（延迟、滚动、悬停）。
+ * 对应 Python 版 xhs/human.py，保持相同数值范围和计算逻辑。
+ */
+
+// ========== 配置常量 ==========
+const CONFIG = {
+  DEFAULT_MAX_ATTEMPTS: 500,
+  STAGNANT_LIMIT: 20,
+  MIN_SCROLL_DELTA: 10,
+  MAX_CLICK_PER_ROUND: 3,
+  STAGNANT_CHECK_THRESHOLD: 2,
+  LARGE_SCROLL_TRIGGER: 5,
+  BUTTON_CLICK_INTERVAL: 3,
+  FINAL_SPRINT_PUSH_COUNT: 15,
+  MAX_COMMENTS_HARD_LIMIT: 500,
+};
+
+// ========== 延迟范围（毫秒） ==========
+const DELAYS = {
+  HUMAN_DELAY: [300, 700],
+  REACTION_TIME: [300, 800],
+  HOVER_TIME: [100, 300],
+  READ_TIME: [500, 1200],
+  SHORT_READ: [600, 1200],
+  SCROLL_WAIT: [100, 200],
+  POST_SCROLL: [300, 500],
+};
+
+// ========== 页面不可访问关键词 ==========
+const INACCESSIBLE_KEYWORDS = [
+  "当前笔记暂时无法浏览",
+  "该内容因违规已被删除",
+  "该笔记已被删除",
+  "内容不存在",
+  "笔记不存在",
+  "已失效",
+  "私密笔记",
+  "仅作者可见",
+  "因用户设置，你无法查看",
+  "因违规无法查看",
+];
+
+// ========== 常用 User-Agent 列表 ==========
+const USER_AGENTS = [
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+];
+
+// ========== 核心函数 ==========
+
+/**
+ * 随机延迟。
+ * @param {number} minMs - 最小毫秒
+ * @param {number} maxMs - 最大毫秒
+ */
+function sleepRandom(minMs, maxMs) {
+  if (maxMs <= minMs) {
+    return new Promise((r) => setTimeout(r, minMs));
+  }
+  const delay = minMs + Math.random() * (maxMs - minMs);
+  return new Promise((r) => setTimeout(r, delay));
+}
+
+/**
+ * 页面导航后的随机等待，模拟人类阅读。
+ */
+function navigationDelay() {
+  return sleepRandom(1000, 2500);
+}
+
+/**
+ * 根据速度获取滚动间隔（毫秒 → 返回毫秒数用于 sleepRandom）。
+ * @param {"slow"|"normal"|"fast"} speed
+ * @returns {number} 间隔毫秒
+ */
+function getScrollInterval(speed) {
+  if (speed === "slow") {
+    return 1200 + Math.floor(Math.random() * 300);
+  }
+  if (speed === "fast") {
+    return 300 + Math.floor(Math.random() * 100);
+  }
+  // normal
+  return 600 + Math.floor(Math.random() * 200);
+}
+
+/**
+ * 根据速度获取滚动比例。
+ * @param {"slow"|"normal"|"fast"} speed
+ * @returns {number}
+ */
+function getScrollRatio(speed) {
+  if (speed === "slow") return 0.5;
+  if (speed === "fast") return 0.9;
+  return 0.7;
+}
+
+/**
+ * 计算滚动距离。
+ * @param {number} viewportHeight - 视口高度
+ * @param {number} baseRatio - 基准比例
+ * @returns {number} 滚动像素数
+ */
+function calculateScrollDelta(viewportHeight, baseRatio) {
+  let scrollDelta = viewportHeight * (baseRatio + Math.random() * 0.2);
+  if (scrollDelta < 400) {
+    scrollDelta = 400;
+  }
+  return scrollDelta + Math.floor(Math.random() * 101) - 50; // jitter -50 ~ +50
+}
+
+/**
+ * 从 User-Agent 列表中随机选择。
+ * @returns {string}
+ */
+function randomUserAgent() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+/**
+ * 生成随机整数 [min, max]。
+ * @param {number} min
+ * @param {number} max
+ * @returns {number}
+ */
+function randomInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+module.exports = {
+  CONFIG,
+  DELAYS,
+  INACCESSIBLE_KEYWORDS,
+  USER_AGENTS,
+  sleepRandom,
+  navigationDelay,
+  getScrollInterval,
+  getScrollRatio,
+  calculateScrollDelta,
+  randomUserAgent,
+  randomInt,
+};
