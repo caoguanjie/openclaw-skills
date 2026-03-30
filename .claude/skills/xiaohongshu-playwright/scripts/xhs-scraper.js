@@ -30,6 +30,8 @@ const {
   getScrollInterval,
   getScrollRatio,
   calculateScrollDelta,
+  shouldBacktrackScroll,
+  calculateBacktrackDelta,
   randomUserAgent,
   randomInt,
 } = require("./human");
@@ -43,6 +45,8 @@ function parseArgs() {
     maxPosts: 10,
     headed: false, // 默认无头
     speed: "normal", // slow | normal | fast
+    taskSpecPath: "",
+    postProcessOnly: false,
     cookiePath: path.join(__dirname, "..", "data", "cookies.json"),
     output: "", // 默认为空，解析完 keyword 后自动生成
   };
@@ -63,6 +67,12 @@ function parseArgs() {
         break;
       case "--speed":
         opts.speed = args[++i] || "normal";
+        break;
+      case "--task-spec":
+        opts.taskSpecPath = args[++i] || "";
+        break;
+      case "--post-process-only":
+        opts.postProcessOnly = true;
         break;
       case "--cookie-path":
         opts.cookiePath = args[++i];
@@ -199,6 +209,42 @@ const ANTI_DETECT_SCRIPT = `
   } catch {}
 })();
 `;
+
+const SEARCH_RESULT_CARD_SELECTOR =
+  'section.note-item, [class*="note-item"], .feeds-page section';
+const SEARCH_RESULT_LINK_SELECTORS = [
+  'section.note-item a.cover',
+  'section.note-item a[href*="/search_result/"]',
+  'section.note-item a[href*="/explore/"]',
+  '[class*="note-item"] a[href*="/search_result/"]',
+  '[class*="note-item"] a[href*="/explore/"]',
+  '.feeds-page section a[href*="/search_result/"]',
+];
+const LOGIN_MODAL_SELECTOR =
+  ".login-container, [class*='login-modal'], [class*='LoginModal']";
+const DETAIL_MODAL_SELECTORS = [
+  '[class*="note-detail-modal"]',
+  '[class*="NoteDetailModal"]',
+  '.note-detail-mask',
+];
+const DETAIL_CLOSE_SELECTORS = [
+  '[class*="note-detail-modal"] [class*="close"]',
+  '[class*="NoteDetailModal"] [class*="close"]',
+  '[class*="close-circle"]',
+  '[class*="close-button"]',
+  '[class*="CloseBtn"]',
+];
+const DETAIL_SCROLL_SELECTORS = [
+  '.note-scroller',
+  '[class*="note-scroller"]',
+  '[class*="NoteScroller"]',
+];
+
+function extractNoteId(value) {
+  const text = String(value || "");
+  const match = text.match(/\/([a-f0-9]{24})\b/i);
+  return match ? match[1] : "";
+}
 
 // ─── Cookie 管理 ───
 async function loadCookies(context, cookiePath) {
@@ -349,6 +395,69 @@ async function manualLogin(page, context, cookiePath, opts = {}) {
   console.log("\n✅ 登录成功，cookie 已保存");
 }
 
+async function hasSearchLoginModal(page) {
+  try {
+    return await page.evaluate((selector) => !!document.querySelector(selector), LOGIN_MODAL_SELECTOR);
+  } catch {
+    return false;
+  }
+}
+
+async function waitForSearchLogin(page, context, cookiePath) {
+  if (!(await hasSearchLoginModal(page))) {
+    return false;
+  }
+
+  console.log("⚠️  搜索页检测到登录弹窗，等待用户扫码...");
+  const maxWait = 5 * 60 * 1000;
+  const pollInterval = 3000;
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < maxWait) {
+    await new Promise((r) => setTimeout(r, pollInterval));
+    const state = await page.evaluate((selector, resultSelector) => {
+      const hasLogin = !!document.querySelector(selector);
+      const cards = document.querySelectorAll(resultSelector).length;
+      return {
+        hasLogin,
+        cards,
+        hasCookieUser:
+          document.cookie.includes("customer_id") ||
+          document.cookie.includes("access-token"),
+      };
+    }, LOGIN_MODAL_SELECTOR, SEARCH_RESULT_CARD_SELECTOR);
+    if (!state.hasLogin && (state.cards > 0 || state.hasCookieUser)) {
+      console.log("\n✅ 登录完成");
+      await saveCookies(context, cookiePath);
+      await navigationDelay();
+      return true;
+    }
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    process.stdout.write(`\r⏳ 已等待 ${elapsed}s，请在浏览器中完成登录...`);
+  }
+
+  console.error("\n❌ 搜索页登录超时（5分钟）");
+  process.exit(1);
+}
+
+async function waitForSearchResults(page) {
+  try {
+    await page.waitForSelector(SEARCH_RESULT_CARD_SELECTOR, { timeout: 10000 });
+  } catch {
+    console.warn("搜索结果加载超时，尝试继续...");
+  }
+}
+
+async function ensureSearchPage(page, searchUrl, context, cookiePath) {
+  if (!page.url().includes("search_result")) {
+    await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+    await navigationDelay();
+  }
+  await waitForSearchLogin(page, context, cookiePath);
+  await waitForSearchResults(page);
+  await sleepRandom(...DELAYS.HUMAN_DELAY);
+}
+
 // ─── 搜索帖子 ───
 async function searchPosts(page, keyword, maxPosts, context, cookiePath) {
   const searchUrl = `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}&source=web_search_result_note`;
@@ -357,129 +466,256 @@ async function searchPosts(page, keyword, maxPosts, context, cookiePath) {
   await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
   await navigationDelay();
   await sleepRandom(...DELAYS.READ_TIME);
-
-  // 检查搜索页是否有登录弹窗
-  const hasModal = await page.evaluate(() => {
-    return !!document.querySelector(".login-container, [class*='login-modal'], [class*='LoginModal']");
-  });
-
-  if (hasModal) {
-    console.log("⚠️  搜索页检测到登录弹窗，等待用户扫码...");
-    const maxWait = 5 * 60 * 1000;
-    const pollInterval = 3000;
-    const startTime = Date.now();
-
-    while (Date.now() - startTime < maxWait) {
-      await new Promise((r) => setTimeout(r, pollInterval));
-      const loggedIn = await page.evaluate(() => {
-        const hasLogin = !!document.querySelector(".login-container, [class*='login-modal'], [class*='LoginModal']");
-        const hasCookieUser = document.cookie.includes("customer_id") || document.cookie.includes("access-token");
-        return !hasLogin && hasCookieUser;
-      });
-      if (loggedIn) break;
-      const elapsed = Math.round((Date.now() - startTime) / 1000);
-      process.stdout.write(`\r⏳ 已等待 ${elapsed}s，请在浏览器中完成登录...`);
-    }
-    console.log("\n✅ 登录完成");
-    await saveCookies(context, cookiePath);
-    await navigationDelay();
-  }
-
-  // 等待搜索结果加载
-  try {
-    await page.waitForSelector(
-      '[class*="note-item"], [class*="search-result"] a, .feeds-page section',
-      { timeout: 10000 }
-    );
-  } catch {
-    console.warn("搜索结果加载超时，尝试继续...");
-  }
-
+  await waitForSearchLogin(page, context, cookiePath);
+  await waitForSearchResults(page);
   await sleepRandom(...DELAYS.HUMAN_DELAY);
 
-  // 提取帖子列表（带去重，加载 2x 候选以支持混合选取）
   const candidateLimit = maxPosts * 2;
-  const posts = await page.evaluate((max) => {
-    const items = [];
-    const seenUrls = new Set();
+  const posts = await page.evaluate(
+    ({ max, selectors }) => {
+      const items = [];
+      const seenUrls = new Set();
+      const extractNoteId = (value) => {
+        const match = String(value || "").match(/\/([a-f0-9]{24})\b/i);
+        return match ? match[1] : "";
+      };
 
-    const selectors = [
-      "section.note-item a.cover",
-      'a[href*="/explore/"]',
-      'a[href*="/search_result/"]',
-      '[class*="note-item"] a',
-      ".feeds-page section a",
-    ];
+      for (const sel of selectors) {
+        const els = document.querySelectorAll(sel);
+        if (els.length === 0) continue;
 
-    for (const sel of selectors) {
-      const els = document.querySelectorAll(sel);
-      if (els.length > 0) {
         els.forEach((el) => {
           const href = el.href || el.closest("a")?.href;
-          if (
-            href &&
-            href.includes("xiaohongshu.com") &&
-            !seenUrls.has(href) &&
-            items.length < max
-          ) {
-            seenUrls.add(href);
-            const title =
-              el.querySelector('[class*="title"]')?.innerText?.trim() ||
-              el
-                .closest("section")
-                ?.querySelector('[class*="title"]')
-                ?.innerText?.trim() ||
-              "";
-            const author =
-              el
-                .closest("section")
-                ?.querySelector('[class*="author"], [class*="name"]')
-                ?.innerText?.trim() || "";
-            items.push({ url: href, title, author });
+          if (!href || items.length >= max) return;
+
+          const absoluteUrl = new URL(href, location.origin).toString();
+          if (!absoluteUrl.includes("xiaohongshu.com") || seenUrls.has(absoluteUrl)) {
+            return;
           }
+
+          const noteId = extractNoteId(absoluteUrl);
+          if (!noteId) return;
+
+          seenUrls.add(absoluteUrl);
+          const title =
+            el.querySelector('[class*="title"]')?.innerText?.trim() ||
+            el.closest("section")?.querySelector('[class*="title"]')?.innerText?.trim() ||
+            "";
+          const author =
+            el
+              .closest("section")
+              ?.querySelector('[class*="author"], [class*="name"]')
+              ?.innerText?.trim() || "";
+
+          items.push({ url: absoluteUrl, title, author, noteId });
         });
+
         if (items.length > 0) break;
       }
-    }
-    return items;
-  }, candidateLimit);
+
+      return items;
+    },
+    { max: candidateLimit, selectors: SEARCH_RESULT_LINK_SELECTORS }
+  );
 
   console.log(`📋 找到 ${posts.length} 篇候选帖子`);
 
-  // 50/50 混合选取策略：前半顺序 + 后半随机
   const halfN = Math.ceil(maxPosts / 2);
   const sequential = posts.slice(0, halfN);
   const remaining = posts.slice(halfN);
-  // Fisher-Yates shuffle
   for (let j = remaining.length - 1; j > 0; j--) {
     const k = Math.floor(Math.random() * (j + 1));
     [remaining[j], remaining[k]] = [remaining[k], remaining[j]];
   }
   const selected = [...sequential, ...remaining].slice(0, maxPosts);
-  console.log(`📋 选取 ${selected.length} 篇帖子（前 ${Math.min(halfN, selected.length)} 顺序 + 后 ${Math.max(0, selected.length - halfN)} 随机）`);
-  return selected;
+  console.log(
+    `📋 选取 ${selected.length} 篇帖子（前 ${Math.min(halfN, selected.length)} 顺序 + 后 ${Math.max(
+      0,
+      selected.length - halfN
+    )} 随机）`
+  );
+  return { posts: selected, searchUrl };
 }
 
-// ─── 关闭弹窗覆盖层（通用） ───
+// ─── 关闭搜索页上的通用覆盖层（不关闭详情弹窗） ───
 async function dismissOverlays(page) {
   try {
     const overlaySelectors = [
       '[class*="close-button"]',
       '[class*="CloseBtn"]',
-      '[class*="modal"] [class*="close"]',
-      '.note-detail-mask',
+      '.close',
     ];
     for (const sel of overlaySelectors) {
       const btn = await page.$(sel);
       if (btn) {
         const isVisible = await btn.isVisible().catch(() => false);
         if (isVisible) {
-          await btn.click();
+          await btn.click().catch(() => null);
           await sleepRandom(...DELAYS.REACTION_TIME);
         }
       }
     }
   } catch {}
+}
+
+async function findPostCard(page, noteId) {
+  for (const base of SEARCH_RESULT_LINK_SELECTORS) {
+    const locator = page.locator(`${base}[href*="${noteId}"]`).first();
+    if ((await locator.count()) > 0) {
+      return locator;
+    }
+  }
+  return null;
+}
+
+async function detectDetailState(page) {
+  return page.evaluate(
+    ({ modalSelectors, resultSelector, scrollSelectors }) => {
+      const isVisible = (el) =>
+        !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+      const modalVisible = modalSelectors.some((selector) => {
+        const el = document.querySelector(selector);
+        return isVisible(el);
+      });
+      const cards = document.querySelectorAll(resultSelector).length;
+      const hasComments = !!document.querySelector(".comments-container");
+      const hasScrollContainer = scrollSelectors.some((selector) =>
+        isVisible(document.querySelector(selector))
+      );
+      return {
+        url: location.href,
+        modalVisible,
+        cards,
+        hasComments,
+        hasScrollContainer,
+      };
+    },
+    {
+      modalSelectors: DETAIL_MODAL_SELECTORS,
+      resultSelector: SEARCH_RESULT_CARD_SELECTOR,
+      scrollSelectors: DETAIL_SCROLL_SELECTORS,
+    }
+  );
+}
+
+async function waitForDetailOpen(page) {
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    const state = await detectDetailState(page);
+    if (state.modalVisible) {
+      return { mode: "modal", state };
+    }
+    if (!state.modalVisible && state.hasComments && state.cards === 0) {
+      return { mode: "fullpage", state };
+    }
+    await sleepRandom(300, 500);
+  }
+  return { mode: "fallback", state: await detectDetailState(page) };
+}
+
+async function navigateToPost(page, post, searchUrl, context, cookiePath) {
+  await ensureSearchPage(page, searchUrl, context, cookiePath);
+  await dismissOverlays(page);
+
+  let card = await findPostCard(page, post.noteId);
+  if (!card) {
+    await page.evaluate(() => {
+      window.scrollBy({ top: window.innerHeight * 0.8, behavior: "smooth" });
+    });
+    await sleepRandom(...DELAYS.BROWSE_SEARCH);
+    card = await findPostCard(page, post.noteId);
+  }
+
+  if (!card) {
+    console.warn(`  ⚠️ 搜索页未找到 noteId=${post.noteId} 的卡片，降级为 goto`);
+    await page.goto(post.url, { waitUntil: "domcontentloaded", timeout: 15000 });
+    await navigationDelay();
+    return { mode: "fallback" };
+  }
+
+  await card.scrollIntoViewIfNeeded();
+  await sleepRandom(...DELAYS.HOVER_CARD);
+  await card.hover().catch(() => null);
+  await sleepRandom(...DELAYS.HOVER_CARD);
+  await card.click({ timeout: 5000 });
+
+  const result = await waitForDetailOpen(page);
+  console.log(`  🚪 进入帖子模式: ${result.mode}`);
+  return result;
+}
+
+async function closeDetailModal(page) {
+  for (const selector of DETAIL_CLOSE_SELECTORS) {
+    const locator = page.locator(selector).first();
+    if ((await locator.count()) > 0) {
+      const visible = await locator.isVisible().catch(() => false);
+      if (!visible) continue;
+      await locator.click().catch(() => null);
+      await sleepRandom(...DELAYS.MODAL_CLOSE_WAIT);
+      const state = await detectDetailState(page);
+      if (!state.modalVisible) {
+        return true;
+      }
+    }
+  }
+
+  await page.keyboard.press("Escape").catch(() => null);
+  await sleepRandom(...DELAYS.MODAL_CLOSE_WAIT);
+  let state = await detectDetailState(page);
+  if (!state.modalVisible) {
+    return true;
+  }
+
+  const mask = page.locator(".note-detail-mask").first();
+  if ((await mask.count()) > 0) {
+    await mask.click({ position: { x: 10, y: 10 } }).catch(() => null);
+    await sleepRandom(...DELAYS.MODAL_CLOSE_WAIT);
+    state = await detectDetailState(page);
+    if (!state.modalVisible) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function returnToSearch(page, mode, searchUrl, context, cookiePath) {
+  if (mode === "modal") {
+    const closed = await closeDetailModal(page);
+    if (closed) {
+      await ensureSearchPage(page, searchUrl, context, cookiePath);
+      return;
+    }
+  }
+
+  await page.goBack({ waitUntil: "domcontentloaded", timeout: 10000 }).catch(() => null);
+  await sleepRandom(...DELAYS.BACK_NAVIGATION);
+  if (!page.url().includes("search_result")) {
+    await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+    await navigationDelay();
+  }
+  await ensureSearchPage(page, searchUrl, context, cookiePath);
+}
+
+async function browseSearchResults(page) {
+  const moves = randomInt(1, 3);
+  for (let i = 0; i < moves; i++) {
+    const delta = randomInt(100, 400) * (Math.random() > 0.4 ? 1 : -1);
+    await page.evaluate((value) => {
+      window.scrollBy({ top: value, behavior: "smooth" });
+    }, delta);
+    await sleepRandom(...DELAYS.BROWSE_SEARCH);
+  }
+
+  if (Math.random() < 0.3) {
+    const cards = page.locator(SEARCH_RESULT_LINK_SELECTORS.join(", "));
+    const count = await cards.count();
+    if (count > 0) {
+      const index = randomInt(0, Math.min(count - 1, 4));
+      await cards.nth(index).hover().catch(() => null);
+      await sleepRandom(...DELAYS.HOVER_CARD);
+    }
+  }
 }
 
 // ─── 从 __INITIAL_STATE__ 提取帖子详情和评论 ───
@@ -554,115 +790,251 @@ function parseStateComments(noteDetailMap, feedId) {
   return { note, comments };
 }
 
-// ─── 人类化滚动（对应 Python feed_detail.py: _human_scroll） ───
-async function humanScroll(page, speed, largeMode, pushCount) {
-  const beforeTop = await page.evaluate(() => window.scrollY || document.documentElement.scrollTop);
-  const viewportHeight = await page.evaluate(() => window.innerHeight);
+async function resolveDetailContext(page, mode) {
+  if (mode !== "modal") {
+    return {
+      mode,
+      rootSelector: "",
+      scrollMode: "window",
+      scrollSelector: "",
+    };
+  }
 
+  const context = await page.evaluate(
+    ({ modalSelectors, scrollSelectors }) => {
+      const isVisible = (el) =>
+        !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+      const rootSelector =
+        modalSelectors.find((selector) => isVisible(document.querySelector(selector))) || "";
+      const scrollSelector =
+        scrollSelectors.find((selector) => {
+          const el = document.querySelector(selector);
+          return isVisible(el) && el.scrollHeight > el.clientHeight + 20;
+        }) || "";
+
+      return {
+        rootSelector,
+        scrollMode: scrollSelector ? "container" : "window",
+        scrollSelector,
+      };
+    },
+    { modalSelectors: DETAIL_MODAL_SELECTORS, scrollSelectors: DETAIL_SCROLL_SELECTORS }
+  );
+
+  return { mode, ...context };
+}
+
+async function getScrollMetrics(page, detailContext) {
+  return page.evaluate((ctx) => {
+    const target =
+      ctx.scrollMode === "container" && ctx.scrollSelector
+        ? document.querySelector(ctx.scrollSelector)
+        : document.scrollingElement || document.documentElement;
+
+    if (!target) {
+      return {
+        top: 0,
+        viewportHeight: window.innerHeight,
+        scrollHeight: 0,
+      };
+    }
+
+    if (ctx.scrollMode === "container") {
+      return {
+        top: target.scrollTop,
+        viewportHeight: target.clientHeight || window.innerHeight,
+        scrollHeight: target.scrollHeight || target.clientHeight || 0,
+      };
+    }
+
+    return {
+      top: window.scrollY || document.documentElement.scrollTop,
+      viewportHeight: window.innerHeight,
+      scrollHeight:
+        document.scrollingElement?.scrollHeight || document.body?.scrollHeight || 0,
+    };
+  }, detailContext);
+}
+
+async function performScroll(page, detailContext, delta, forceToBottom = false) {
+  return page.evaluate(
+    ({ ctx, step, toBottom }) => {
+      const target =
+        ctx.scrollMode === "container" && ctx.scrollSelector
+          ? document.querySelector(ctx.scrollSelector)
+          : document.scrollingElement || document.documentElement;
+
+      if (!target) {
+        return 0;
+      }
+
+      if (ctx.scrollMode === "container") {
+        const before = target.scrollTop;
+        target.scrollTo({
+          top: toBottom ? target.scrollHeight : before + step,
+          behavior: "smooth",
+        });
+        return before;
+      }
+
+      const before = window.scrollY || document.documentElement.scrollTop;
+      if (toBottom) {
+        window.scrollTo(0, document.body.scrollHeight);
+      } else {
+        window.scrollBy({ top: step, behavior: "smooth" });
+      }
+      return before;
+    },
+    { ctx: detailContext, step: Math.round(delta), toBottom: forceToBottom }
+  );
+}
+
+// ─── 人类化滚动（兼容弹窗滚动容器） ───
+async function humanScroll(page, speed, largeMode, pushCount, detailContext) {
+  const beforeState = await getScrollMetrics(page, detailContext);
   let baseRatio = getScrollRatio(speed);
   if (largeMode) {
     baseRatio *= 2.0;
   }
 
   let actualDelta = 0;
-  let currentScrollTop = beforeTop;
-  let prevTop = beforeTop;
+  let currentScrollTop = beforeState.top;
+  let prevTop = beforeState.top;
+  let furthestScrollTop = beforeState.top;
 
   for (let i = 0; i < Math.max(1, pushCount); i++) {
-    const scrollDelta = calculateScrollDelta(viewportHeight, baseRatio);
-
-    // 使用 window.scrollBy 替代 page.mouse.wheel（更接近真实用户行为）
-    await page.evaluate((delta) => {
-      window.scrollBy({ top: delta, behavior: "smooth" });
-    }, Math.round(scrollDelta));
-
+    const scrollDelta = calculateScrollDelta(beforeState.viewportHeight, baseRatio);
+    await performScroll(page, detailContext, scrollDelta);
     await sleepRandom(...DELAYS.SCROLL_WAIT);
 
-    currentScrollTop = await page.evaluate(() => window.scrollY || document.documentElement.scrollTop);
+    const state = await getScrollMetrics(page, detailContext);
+    currentScrollTop = state.top;
+    furthestScrollTop = Math.max(furthestScrollTop, currentScrollTop);
     const deltaThis = currentScrollTop - prevTop;
-    actualDelta += deltaThis;
     prevTop = currentScrollTop;
+
+    if (
+      shouldBacktrackScroll(
+        speed,
+        largeMode,
+        currentScrollTop,
+        state.viewportHeight || beforeState.viewportHeight
+      )
+    ) {
+      const backtrackDelta = calculateBacktrackDelta(
+        state.viewportHeight || beforeState.viewportHeight,
+        Math.max(deltaThis, scrollDelta),
+        currentScrollTop
+      );
+      await performScroll(page, detailContext, -backtrackDelta);
+      await sleepRandom(...DELAYS.POST_SCROLL);
+
+      const afterBacktrackState = await getScrollMetrics(page, detailContext);
+      currentScrollTop = afterBacktrackState.top;
+      prevTop = currentScrollTop;
+    }
+
+    actualDelta = furthestScrollTop - beforeState.top;
 
     if (i < pushCount - 1) {
       await sleepRandom(...DELAYS.HUMAN_DELAY);
     }
   }
 
-  // 如果没有滚动，强制到底部
   if (actualDelta < CONFIG.MIN_SCROLL_DELTA && pushCount > 0) {
-    await page.evaluate(() => {
-      window.scrollTo(0, document.body.scrollHeight);
-    });
+    await performScroll(page, detailContext, 0, true);
     await sleepRandom(...DELAYS.POST_SCROLL);
-    currentScrollTop = await page.evaluate(() => window.scrollY || document.documentElement.scrollTop);
-    actualDelta = currentScrollTop - beforeTop;
+    const state = await getScrollMetrics(page, detailContext);
+    currentScrollTop = state.top;
+    actualDelta = currentScrollTop - beforeState.top;
   }
 
   return { actualDelta, currentScrollTop };
 }
 
-// ─── 滚动到评论区（对应 Python feed_detail.py: _scroll_to_comments_area） ───
-async function scrollToCommentsArea(page) {
+// ─── 滚动到评论区（兼容弹窗滚动容器） ───
+async function scrollToCommentsArea(page, detailContext) {
   console.log("  📜 滚动到评论区...");
-  await page.evaluate(() => {
-    const container = document.querySelector(".comments-container");
-    if (container) container.scrollIntoView({ behavior: "smooth" });
-  });
-  await sleepRandom(500, 1000);
-
-  // 触发 wheel 事件以激活懒加载（参考 Python dispatch_wheel_event）
-  await page.evaluate(() => {
-    window.dispatchEvent(new WheelEvent("wheel", {
-      deltaY: 100,
-      bubbles: true,
-    }));
-  });
-}
-
-// ─── 滚动到最后一条评论（对应 Python feed_detail.py: _scroll_to_last_comment） ───
-async function scrollToLastComment(page) {
-  await page.evaluate(() => {
-    const comments = document.querySelectorAll(".parent-comment");
-    if (comments.length > 0) {
-      comments[comments.length - 1].scrollIntoView({ behavior: "smooth" });
+  await page.evaluate((ctx) => {
+    const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
+    const container = root?.querySelector(".comments-container") || document.querySelector(".comments-container");
+    if (container) {
+      container.scrollIntoView({ behavior: "smooth", block: "center" });
     }
-  });
+
+    const target =
+      ctx.scrollMode === "container" && ctx.scrollSelector
+        ? document.querySelector(ctx.scrollSelector)
+        : window;
+    target.dispatchEvent(
+      new WheelEvent("wheel", {
+        deltaY: 100,
+        bubbles: true,
+      })
+    );
+  }, detailContext);
+  await sleepRandom(500, 1000);
 }
 
-// ─── 点击展开回复按钮（对应 Python feed_detail.py: _click_show_more_buttons） ───
-async function clickShowMoreButtons(page, maxRepliesThreshold = 50) {
-  const result = await page.evaluate((threshold) => {
-    const btns = document.querySelectorAll(".show-more");
-    let clicked = 0;
-    let skipped = 0;
-    btns.forEach((btn) => {
-      const text = btn.textContent || "";
-      const match = text.match(/展开\s*(\d+)\s*条回复/);
-      if (match && parseInt(match[1], 10) > threshold) {
-        skipped++;
-        return;
-      }
-      btn.click();
-      clicked++;
-    });
-    return { clicked, skipped };
-  }, maxRepliesThreshold);
-  return result;
+// ─── 滚动到最后一条评论（兼容弹窗滚动容器） ───
+async function scrollToLastComment(page, detailContext) {
+  await page.evaluate((ctx) => {
+    const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
+    const comments =
+      root?.querySelectorAll(".parent-comment") || document.querySelectorAll(".parent-comment");
+    if (comments.length > 0) {
+      comments[comments.length - 1].scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, detailContext);
 }
 
-// ─── 检查评论数 ───
-async function getCommentCount(page) {
-  return page.evaluate(() => document.querySelectorAll(".parent-comment").length);
+// ─── 点击展开回复按钮（兼容弹窗 root） ───
+async function clickShowMoreButtons(page, detailContext, maxRepliesThreshold = 50) {
+  return page.evaluate(
+    ({ ctx, threshold }) => {
+      const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
+      const btns = root?.querySelectorAll(".show-more") || [];
+      let clicked = 0;
+      let skipped = 0;
+      btns.forEach((btn) => {
+        const text = btn.textContent || "";
+        const match = text.match(/展开\s*(\d+)\s*条回复/);
+        if (match && parseInt(match[1], 10) > threshold) {
+          skipped++;
+          return;
+        }
+        btn.click();
+        clicked++;
+      });
+      return { clicked, skipped };
+    },
+    { ctx: detailContext, threshold: maxRepliesThreshold }
+  );
 }
 
-// ─── 检查是否到达底部 ───
-async function checkEndContainer(page) {
-  return page.evaluate(() => {
-    const el = document.querySelector(".end-container");
+async function getCommentCount(page, detailContext) {
+  return page.evaluate((ctx) => {
+    const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
+    return root?.querySelectorAll(".parent-comment").length || 0;
+  }, detailContext);
+}
+
+async function checkEndContainer(page, detailContext) {
+  return page.evaluate((ctx) => {
+    const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
+    const el = root?.querySelector(".end-container") || document.querySelector(".end-container");
     if (!el) return false;
     const text = el.textContent.trim().toUpperCase();
     return text.includes("THE END") || text.includes("THEEND");
-  });
+  }, detailContext);
+}
+
+async function checkNoComments(page, detailContext) {
+  return page.evaluate((ctx) => {
+    const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
+    const el = root?.querySelector(".no-comments-text") || document.querySelector(".no-comments-text");
+    return el ? el.textContent.includes("这是一片荒地") : false;
+  }, detailContext);
 }
 
 // ─── 加载已有采集数据（帖子级去重） ───
@@ -688,7 +1060,7 @@ function loadExistingData(outputPath, keyword) {
 }
 
 // ─── 评论加载状态机（对应 Python feed_detail.py: _load_all_comments） ───
-async function loadAllComments(page, maxComments, speed) {
+async function loadAllComments(page, maxComments, speed, detailContext) {
   // 硬上限 500，防止极端情况
   const effectiveMax = maxComments > 0
     ? Math.min(maxComments, CONFIG.MAX_COMMENTS_HARD_LIMIT)
@@ -697,14 +1069,10 @@ async function loadAllComments(page, maxComments, speed) {
   const scrollInterval = getScrollInterval(speed);
 
   console.log("  📜 开始加载评论...");
-  await scrollToCommentsArea(page);
+  await scrollToCommentsArea(page, detailContext);
   await sleepRandom(...DELAYS.HUMAN_DELAY);
 
-  // 检查是否无评论
-  const noComments = await page.evaluate(() => {
-    const el = document.querySelector(".no-comments-text");
-    return el ? el.textContent.includes("这是一片荒地") : false;
-  });
+  const noComments = await checkNoComments(page, detailContext);
   if (noComments) {
     console.log("  ℹ️ 该帖子无评论");
     return { hasComments: false };
@@ -717,22 +1085,19 @@ async function loadAllComments(page, maxComments, speed) {
   let totalSkipped = 0;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    // 检查是否到达底部
-    if (await checkEndContainer(page)) {
-      const count = await getCommentCount(page);
+    if (await checkEndContainer(page, detailContext)) {
+      const count = await getCommentCount(page, detailContext);
       console.log(`  ✅ 检测到 THE END，加载完成: ${count} 条评论, 点击: ${totalClicked}, 跳过: ${totalSkipped}`);
       return { hasComments: true };
     }
 
-    // 定期点击展开按钮（每 BUTTON_CLICK_INTERVAL 轮）
     if (attempt % CONFIG.BUTTON_CLICK_INTERVAL === 0) {
-      const { clicked, skipped } = await clickShowMoreButtons(page);
+      const { clicked, skipped } = await clickShowMoreButtons(page, detailContext);
       totalClicked += clicked;
       totalSkipped += skipped;
       if (clicked > 0 || skipped > 0) {
         await sleepRandom(...DELAYS.READ_TIME);
-        // 第二轮点击（参考 Python 实现）
-        const r2 = await clickShowMoreButtons(page);
+        const r2 = await clickShowMoreButtons(page, detailContext);
         totalClicked += r2.clicked;
         totalSkipped += r2.skipped;
         if (r2.clicked > 0 || r2.skipped > 0) {
@@ -741,8 +1106,7 @@ async function loadAllComments(page, maxComments, speed) {
       }
     }
 
-    // 获取当前评论数
-    const currentCount = await getCommentCount(page);
+    const currentCount = await getCommentCount(page, detailContext);
     if (currentCount !== lastCount) {
       if (attempt % 5 === 0 || currentCount - lastCount > 5) {
         console.log(`  📊 评论增加: ${lastCount} -> ${currentCount}`);
@@ -753,26 +1117,29 @@ async function loadAllComments(page, maxComments, speed) {
       stagnantChecks++;
     }
 
-    // 检查是否达到目标（含硬上限）
     if (currentCount >= effectiveMax) {
       console.log(`  ✅ 已达到目标评论数: ${currentCount}/${effectiveMax}`);
       return { hasComments: true };
     }
 
-    // 滚动到最后一条评论
     if (currentCount > 0) {
-      await scrollToLastComment(page);
+      await scrollToLastComment(page, detailContext);
       await sleepRandom(...DELAYS.POST_SCROLL);
     }
 
-    // 计算 pushCount（参考 Python: large_mode 时 3+random(0,2)）
     const largeMode = stagnantChecks >= CONFIG.LARGE_SCROLL_TRIGGER;
     let pushCount = 1;
     if (largeMode) {
       pushCount = 3 + randomInt(0, 2);
     }
 
-    const { actualDelta, currentScrollTop } = await humanScroll(page, speed, largeMode, pushCount);
+    const { actualDelta, currentScrollTop } = await humanScroll(
+      page,
+      speed,
+      largeMode,
+      pushCount,
+      detailContext
+    );
 
     if (actualDelta < CONFIG.MIN_SCROLL_DELTA || currentScrollTop === lastScrollTop) {
       stagnantChecks++;
@@ -781,21 +1148,18 @@ async function loadAllComments(page, maxComments, speed) {
       lastScrollTop = currentScrollTop;
     }
 
-    // 停滞处理（参考 Python: STAGNANT_LIMIT 后大冲刺）
     if (stagnantChecks >= CONFIG.STAGNANT_LIMIT) {
       console.log("  ⚡ 停滞过多，尝试大冲刺...");
-      await humanScroll(page, speed, true, 10);
+      await humanScroll(page, speed, true, 10, detailContext);
       stagnantChecks = 0;
     }
 
-    // 滚动间隔
     await new Promise((r) => setTimeout(r, scrollInterval));
   }
 
-  // 最终冲刺
   console.log("  🏃 达到最大尝试次数，最后冲刺...");
-  await humanScroll(page, speed, true, CONFIG.FINAL_SPRINT_PUSH_COUNT);
-  const count = await getCommentCount(page);
+  await humanScroll(page, speed, true, CONFIG.FINAL_SPRINT_PUSH_COUNT, detailContext);
+  const count = await getCommentCount(page, detailContext);
   console.log(`  📊 加载结束: ${count} 条评论, 点击: ${totalClicked}, 跳过: ${totalSkipped}`);
   return { hasComments: count > 0 };
 }
@@ -811,34 +1175,9 @@ async function checkRateLimit(page) {
 }
 
 // ─── 提取单篇帖子评论（基于 __INITIAL_STATE__） ───
-async function extractComments(page, postUrl, maxComments, speed) {
-  const MAX_RETRIES = 3;
-
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    console.log(`  📖 打开帖子${attempt > 1 ? `（第 ${attempt} 次尝试）` : ''}: ${postUrl}`);
-
-    await page.goto(postUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
-    await navigationDelay();
-    await sleepRandom(...DELAYS.HUMAN_DELAY);
-
-    // 检测频率限制
-    if (await checkRateLimit(page)) {
-      if (attempt < MAX_RETRIES) {
-        const waitMs = DELAYS.RATE_LIMIT_WAIT[0] + Math.random() * (DELAYS.RATE_LIMIT_WAIT[1] - DELAYS.RATE_LIMIT_WAIT[0]);
-        console.warn(`  ⚠️ 触发频率限制（300013），等待 ${Math.round(waitMs / 1000)}s 后重试...`);
-        await sleepRandom(...DELAYS.RATE_LIMIT_WAIT);
-        continue;
-      }
-      console.error(`  ❌ 连续 ${MAX_RETRIES} 次触发频率限制，跳过此帖`);
-      return { title: "", author: "", commentCount: "0", comments: [], screenshotFile: "" };
-    }
-    // 限流检测通过，跳出重试循环进入正常提取流程
-    break;
-  }
-
-  // 从 URL 提取 feedId
-  const feedIdMatch = postUrl.match(/\/([a-f0-9]{24})\b/);
-  const feedId = feedIdMatch ? feedIdMatch[1] : "";
+async function extractComments(page, post, maxComments, speed, detailContext) {
+  console.log(`  📖 提取帖子: ${post.url}`);
+  const feedId = post.noteId || extractNoteId(post.url);
 
   // 等待 __INITIAL_STATE__ 可用
   try {
@@ -850,15 +1189,13 @@ async function extractComments(page, postUrl, maxComments, speed) {
     console.warn("  ⚠️ __INITIAL_STATE__ 加载超时");
   }
 
-  // 等待评论区容器出现
   try {
     await page.waitForSelector(".comments-container", { timeout: 8000 });
   } catch {
     console.warn("  ⚠️ 评论区加载超时");
   }
 
-  // 使用状态机加载评论
-  const { hasComments } = await loadAllComments(page, maxComments, speed);
+  const { hasComments } = await loadAllComments(page, maxComments, speed, detailContext);
 
   if (!hasComments) {
     const result = await page.evaluate(EXTRACT_DETAIL_JS);
@@ -945,93 +1282,55 @@ function sanitizeKeywordForFilename(keyword) {
   return String(keyword || 'keyword').replace(/[\\/:*?"<>|\s]+/g, '_').replace(/^_+|_+$/g, '') || 'keyword';
 }
 
-function detectInterest(content) {
-  const text = String(content || '').trim();
-  if (!text) return null;
-
-  const patterns = [
-    { re: /多少钱|价格|费用|贵不贵|预算|怎么收费|什么价|求[个]?价/, tags: ['购买意向', '咨询'], score: 8, reason: '明确询问价格或费用，消费意向较强' },
-    { re: /适合我吗|适不适合|我.*适合|我这种.*[能行]/, tags: ['咨询', '需求判断'], score: 8, reason: '在判断自身适合性，具备现实需求' },
-    { re: /在哪[买做弄]|哪里[买做弄]|哪家好|去哪[买做]|求推荐|有.{0,2}推荐|求链接|有链接/, tags: ['购买意向', '渠道咨询'], score: 8, reason: '明确咨询购买渠道或服务方，转化可能较高' },
-    { re: /想[做买]|准备[做买]|想入手|想试试|打算[做买]|种草了|被种草|心动了|怎么买/, tags: ['购买意向'], score: 7, reason: '表达了较明确的尝试或消费计划' },
-    { re: /效果怎么样|好不好用|值不值|有用吗|质量怎么样|靠谱吗|维持多久|有没有坑/, tags: ['深度讨论', '咨询'], score: 7, reason: '围绕效果或体验做决策前咨询，兴趣较高' },
-    { re: /我[买用做]过|我之前[买用做]|我去年[买用做]|亲身经历|入手了|已[购入买]/, tags: ['深度讨论', '经验用户'], score: 6, reason: '有真实使用或消费经历，长期关注相关话题' },
-  ];
-
-  for (const p of patterns) {
-    if (p.re.test(text)) {
-      return {
-        interestTags: p.tags.join(', '),
-        interestScore: p.score,
-        reason: p.reason,
-      };
-    }
+function loadJsonFile(filePath, label = "JSON 文件") {
+  const text = fs.readFileSync(filePath, "utf-8");
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${label} 解析失败: ${error.message}`);
   }
-  return null;
 }
 
-function isRelevantPost(post, keyword) {
-  if (!keyword) return true;
-  const title = String(post.title || '');
-  if (title.includes(keyword)) return true;
-  const sample = (post.comments || []).slice(0, 10).map((c) => c.content || '').join(' ');
-  return sample.includes(keyword);
+function normalizeStringArray(values, label) {
+  if (!Array.isArray(values)) {
+    throw new Error(`${label} 必须为数组`);
+  }
+  return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
 }
 
-function buildAnalysis(result, keyword) {
-  const posts = [];
-  for (const post of result.posts || []) {
-    if (!isRelevantPost(post, keyword)) continue;
-
-    const users = new Map();
-    for (const c of post.comments || []) {
-      const hit = detectInterest(c.content);
-      if (!hit) continue;
-      const username = c.username || c.userName || '未知用户';
-      const userId = c.userId || '';
-      const key = `${username}::${userId}`;
-      if (!users.has(key)) {
-        users.set(key, {
-          username,
-          userId,
-          ipLocation: c.ipLocation || '',
-          profileUrl: c.profileUrl || (userId ? `https://www.xiaohongshu.com/user/profile/${userId}` : ''),
-          comments: [],
-          scores: [],
-          tags: new Set(),
-          reasons: [],
-        });
-      }
-      const user = users.get(key);
-      user.comments.push(String(c.content || '').trim());
-      user.scores.push(hit.interestScore);
-      hit.interestTags.split(/[,，]/).map((x) => x.trim()).filter(Boolean).forEach((t) => user.tags.add(t));
-      user.reasons.push(hit.reason);
-    }
-
-    const validComments = [...users.values()].map((u) => ({
-      username: u.username,
-      userId: u.userId,
-      content: u.comments.map((text, i) => `${i + 1}.${text}`).join(' '),
-      ipLocation: u.ipLocation,
-      interestTags: [...u.tags].join(', '),
-      interestScore: Math.max(...u.scores),
-      reason: [...new Set(u.reasons)].join('；').slice(0, 120),
-      profileUrl: u.profileUrl,
-    })).filter((u) => u.interestScore >= 6).sort((a, b) => b.interestScore - a.interestScore);
-
-    if (validComments.length) {
-      posts.push({
-        title: post.title || '',
-        url: post.url || '',
-        screenshotFile: post.screenshotFile || '',
-        totalComments: post.commentCount || (post.comments || []).length,
-        collectedComments: (post.comments || []).length,
-        validComments,
-      });
-    }
+function loadTaskSpec(taskSpecPath, keyword) {
+  if (!taskSpecPath) {
+    throw new Error("必须传入 --task-spec。先生成 task spec，再运行采集/粗筛流程");
   }
-  return { keyword, posts };
+
+  const absolutePath = path.resolve(taskSpecPath);
+  if (!fs.existsSync(absolutePath)) {
+    throw new Error(`task spec 不存在: ${absolutePath}`);
+  }
+
+  const expectedDir = path.resolve(__dirname, "..", "data", "task-specs");
+  if (!absolutePath.startsWith(expectedDir + path.sep)) {
+    throw new Error(`task spec 必须位于 data/task-specs/ 目录下: ${absolutePath}`);
+  }
+
+  const spec = loadJsonFile(absolutePath, "task spec");
+  const normalized = {
+    keyword: String(spec.keyword || keyword || "").trim(),
+    post_relevance: {
+      include: normalizeStringArray(spec.post_relevance?.include || [], "post_relevance.include"),
+      exclude: normalizeStringArray(spec.post_relevance?.exclude || [], "post_relevance.exclude"),
+    },
+    comment_filter: {
+      include: normalizeStringArray(spec.comment_filter?.include || [], "comment_filter.include"),
+      exclude: normalizeStringArray(spec.comment_filter?.exclude || [], "comment_filter.exclude"),
+    },
+    semantic_focus: String(spec.semantic_focus || "").trim(),
+  };
+
+  if (!normalized.keyword) {
+    throw new Error("task spec.keyword 不能为空");
+  }
+  return { path: absolutePath, spec: normalized };
 }
 
 function runNodeScript(scriptPath, args = []) {
@@ -1042,36 +1341,46 @@ function runNodeScript(scriptPath, args = []) {
   }
 }
 
-function runPostPipeline(opts, result) {
+function runPostPipeline(opts, result, taskSpec) {
   const skillDir = path.join(__dirname, '..');
   const safeKeyword = sanitizeKeywordForFilename(opts.keyword);
-  const filteredPath = path.join(skillDir, 'data', `filtered_${safeKeyword}.json`);
-  const analysisPath = path.join(skillDir, 'data', `analysis_${safeKeyword}.json`);
+  const candidatesPath = path.join(skillDir, 'data', `candidates_${safeKeyword}.json`);
   const filterScript = path.join(__dirname, 'filter-comments.js');
-  const excelScript = path.join(__dirname, 'generate-excel.js');
 
   console.log('\n🔁 开始自动执行后处理流程...');
-  runNodeScript(filterScript, ['--input', opts.output, '--output', filteredPath]);
+  runNodeScript(filterScript, [
+    '--input',
+    opts.output,
+    '--output',
+    candidatesPath,
+    '--task-spec',
+    taskSpec.path,
+  ]);
 
-  const analysis = buildAnalysis(result, opts.keyword);
-  fs.writeFileSync(analysisPath, JSON.stringify(analysis, null, 2), 'utf-8');
-  const prospectCount = analysis.posts.reduce((sum, p) => sum + (p.validComments || []).length, 0);
-  console.log(`✅ 分析文件已生成: ${analysisPath}`);
-  console.log(`   相关帖子: ${analysis.posts.length}`);
-  console.log(`   潜客数量: ${prospectCount}`);
+  console.log(`✅ 候选文件已生成: ${candidatesPath}`);
+  console.log(`   Task Spec: ${taskSpec.path}`);
+  console.log(`ℹ️ 下一步由 AI 读取 candidates_${safeKeyword}.json，完成语义精筛并生成 analysis_${safeKeyword}.json`);
 
-  runNodeScript(excelScript, ['--input', analysisPath]);
+  return { candidatesPath };
 }
 
 // ─── 主流程 ───
 async function main() {
   const opts = parseArgs();
+  const taskSpec = loadTaskSpec(opts.taskSpecPath, opts.keyword);
   console.log("🚀 小红书评论采集器启动（人类化模式）");
   console.log(`   关键词: ${opts.keyword}`);
   console.log(`   最大帖子数: ${opts.maxPosts}`);
   console.log(`   每帖最大评论数: ${opts.maxComments === 0 ? "全部（硬上限 500）" : opts.maxComments}`);
   console.log(`   运行模式: ${opts.headed ? "有头" : "无头"}`);
   console.log(`   滚动速度: ${opts.speed}`);
+  console.log(`   Task Spec: ${path.basename(taskSpec.path)}`);
+
+  if (opts.postProcessOnly) {
+    const result = loadJsonFile(opts.output, "采集结果");
+    runPostPipeline(opts, result, taskSpec);
+    return;
+  }
 
   await ensureBrowserInstalled();
 
@@ -1114,7 +1423,13 @@ async function main() {
     const { existingPosts, collectedUrls } = loadExistingData(opts.output, opts.keyword);
 
     // 3. 搜索帖子
-    const allPosts = await searchPosts(page, opts.keyword, opts.maxPosts, context, opts.cookiePath);
+    const { posts: allPosts, searchUrl } = await searchPosts(
+      page,
+      opts.keyword,
+      opts.maxPosts,
+      context,
+      opts.cookiePath
+    );
 
     // 过滤已采集的帖子
     const posts = allPosts.filter((p) => !collectedUrls.has(p.url));
@@ -1136,28 +1451,91 @@ async function main() {
 
     for (let i = 0; i < posts.length; i++) {
       console.log(`\n📌 [${i + 1}/${posts.length}] 处理帖子...`);
+      let postData = null;
+      let handled = false;
+
       try {
-        await dismissOverlays(page);
-        const postData = await extractComments(
-          page,
-          posts[i].url,
-          opts.maxComments,
-          opts.speed
-        );
-        newPosts.push({
-          title: postData.title || posts[i].title,
-          url: posts[i].url,
-          author: postData.author || posts[i].author,
-          commentCount: postData.commentCount || "0",
-          comments: postData.comments,
-          screenshotFile: postData.screenshotFile || "",
-        });
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          let nav = { mode: "fallback" };
+          try {
+            nav = await navigateToPost(
+              page,
+              posts[i],
+              searchUrl,
+              context,
+              opts.cookiePath
+            );
+
+            if (await checkRateLimit(page)) {
+              if (attempt < 3) {
+                console.warn(`  ⚠️ 触发频率限制（300013），第 ${attempt} 次重试前等待...`);
+                await returnToSearch(page, nav.mode, searchUrl, context, opts.cookiePath);
+                await sleepRandom(...DELAYS.RATE_LIMIT_WAIT);
+                continue;
+              }
+              console.error("  ❌ 连续 3 次触发频率限制，跳过此帖");
+              await returnToSearch(page, nav.mode, searchUrl, context, opts.cookiePath);
+              handled = true;
+              break;
+            }
+
+            const detailContext = await resolveDetailContext(page, nav.mode);
+            console.log(
+              `  🧭 评论滚动上下文: ${detailContext.scrollMode}${
+                detailContext.scrollSelector ? ` (${detailContext.scrollSelector})` : ""
+              }`
+            );
+            postData = await extractComments(
+              page,
+              posts[i],
+              opts.maxComments,
+              opts.speed,
+              detailContext
+            );
+            await returnToSearch(page, nav.mode, searchUrl, context, opts.cookiePath);
+            handled = true;
+            break;
+          } catch (error) {
+            const message = error?.message || String(error);
+            const retryable = /Execution context was destroyed|Cannot find context|Target page, context or browser has been closed|Navigation failed/i.test(message);
+            console.warn(`  ⚠️ 第 ${attempt} 次处理异常: ${message}`);
+            await returnToSearch(page, nav.mode, searchUrl, context, opts.cookiePath).catch(() => null);
+            if (retryable && attempt < 3) {
+              await sleepRandom(1500, 3000);
+              continue;
+            }
+            throw error;
+          }
+        }
+
+        if (postData) {
+          newPosts.push({
+            title: postData.title || posts[i].title,
+            url: posts[i].url,
+            noteId: posts[i].noteId || extractNoteId(posts[i].url),
+            author: postData.author || posts[i].author,
+            commentCount: postData.commentCount || "0",
+            comments: postData.comments,
+            screenshotFile: postData.screenshotFile || "",
+          });
+        }
       } catch (e) {
         console.error(`  ❌ 帖子处理失败: ${e.message}`);
+        await returnToSearch(
+          page,
+          "fallback",
+          searchUrl,
+          context,
+          opts.cookiePath
+        ).catch(() => null);
       }
 
-      // 帖子间间隔：5-10s 基础间隔 + 1-2.5s 模拟阅读，防止频率限制
+      if (!handled) {
+        console.warn("  ⚠️ 本帖未能完成处理");
+      }
+
       if (i < posts.length - 1) {
+        await browseSearchResults(page);
         await sleepRandom(...DELAYS.POST_GAP);
         await navigationDelay();
         const waitSec = Math.round((DELAYS.POST_GAP[0] + DELAYS.POST_GAP[1]) / 2000);
@@ -1188,7 +1566,7 @@ async function main() {
     console.log(`   合计评论: ${totalComments}`);
     console.log(`   输出: ${opts.output}`);
 
-    runPostPipeline(opts, result);
+    runPostPipeline(opts, result, taskSpec);
 
     await saveCookies(context, opts.cookiePath);
   } catch (e) {
