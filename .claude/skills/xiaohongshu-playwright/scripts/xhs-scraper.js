@@ -354,7 +354,7 @@ async function applyPreGotoHumanDelay(searchPage) {
 }
 
 async function applyPostGotoHumanDelay(detailPage) {
-  await sleepRandom(1200, 2600);
+  await sleepRandom(2000, 4000);
 }
 
 function extractNoteId(value) {

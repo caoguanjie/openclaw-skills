@@ -23,18 +23,18 @@ const CONFIG = {
 
 // ========== 延迟范围（毫秒） ==========
 const DELAYS = {
-  HUMAN_DELAY: [300, 700],
+  HUMAN_DELAY: [400, 900],
   REACTION_TIME: [300, 800],
   HOVER_TIME: [100, 300],
-  READ_TIME: [500, 1200],
-  SHORT_READ: [600, 1200],
+  READ_TIME: [800, 1800],
+  SHORT_READ: [900, 1600],
   SCROLL_WAIT: [100, 200],
-  POST_SCROLL: [300, 500],
+  POST_SCROLL: [500, 900],
   BROWSE_SEARCH: [1500, 3000],
   HOVER_CARD: [200, 500],
   MODAL_CLOSE_WAIT: [500, 1000],
   BACK_NAVIGATION: [1000, 2000],
-  POST_GAP: [5000, 10000],       // 帖子间基础间隔 5-10s
+  POST_GAP: [8000, 15000],       // 帖子间基础间隔 8-15s
   RATE_LIMIT_WAIT: [15000, 30000], // 遇到限流后等待 15-30s
 };
 
@@ -99,13 +99,13 @@ function navigationDelay() {
  */
 function getScrollInterval(speed) {
   if (speed === "slow") {
-    return 1200 + Math.floor(Math.random() * 300);
+    return 1800 + Math.floor(Math.random() * 700);
   }
   if (speed === "fast") {
     return 300 + Math.floor(Math.random() * 100);
   }
   // normal
-  return 600 + Math.floor(Math.random() * 200);
+  return 900 + Math.floor(Math.random() * 300);
 }
 
 /**
