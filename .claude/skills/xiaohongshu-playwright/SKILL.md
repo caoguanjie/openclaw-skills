@@ -14,15 +14,11 @@ description: 在小红书上挖掘潜在客户和目标用户。搜索关键词�
 - rebrowser-patches（`npm install rebrowser-patches`）— 修复 CDP leak 和 navigator.webdriver 检测，不装的话小红书反爬系统能直接识别出自动化浏览器
 - exceljs（`npm install exceljs`）— Excel 生成脚本依赖
 
-安装全部依赖（淘宝镜像优先，失败回退官方源）：
-```bash
-cd <SKILL_DIR> && npm install --registry=https://registry.npmmirror.com 2>/dev/null || npm install
-```
+首次环境检查与安装统一在 **步骤 1a** 执行：
 
-安装 Playwright 浏览器（国内 CDN 加速）：
-```bash
-PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright npx playwright install chromium
-```
+- npm 依赖安装：阿里镜像源（npmmirror）优先，失败回退官方源
+- Playwright Chromium：先尝试阿里镜像源（npmmirror）下载，失败回退官方源
+- 环境未就绪前，不进入运行模式选择和正式采集
 
 ## 使用方式
 
@@ -92,23 +88,98 @@ PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright npx playw
 
 > **采集完成后必须一气呵成走完全流程，中间不得停顿询问用户。**
 >
-> Step 2 采集数据 → Step 2.5 验证相关性 → Step 3A 粗筛 → Step 3B AI 精筛 → Step 4 生成 Excel，全部自动串联执行。
+> 步骤 1 [并行启动] → 步骤 2 → 步骤 3 → 步骤 4 → 步骤 5 [并行精筛] → 步骤 6 → 步骤 7 → 步骤 8，全部自动串联执行。
 > 只有在遇到报错或异常时才暂停通知用户，正常流程不允许中断。
 > 最终把 Excel 文件路径告诉用户即可。
+>
+> **强约束**：
+> - 必须先生成 task spec（步骤 1b），可与环境检查并行，但必须在步骤 3 前完成
+> - 粗筛脚本必须读取 task spec（步骤 4）
+> - 步骤 5 并行精筛最多同时运行 3 个 sub-agent（MAX_CONCURRENT_AGENTS = 3）
+> - 串行降级时**必须告知用户**：`⚠️ 当前环境不支持并行精筛，改为串行模式，速度较慢。`
+> - 步骤 8 清理使用 `rm -rf`（安全处理不存在的目录），cleanup-task-specs 使用 `--keyword` 参数
+> - 多关键词时：步骤 3-4 串行（共享 cookie）；步骤 5 可在各关键词完成步骤 4 后各自启动并行精筛
+> - 每次运行都要落盘 task spec / candidates / analysis
+> - 成功后清理 task spec（按关键词删除）和 analysis_posts 分片目录
+> - 失败时保留以上文件以便复盘
 
 ## 工作流程
 
-### Step 1: 读取站点经验
+### 步骤 1 [并行启动]
 
-读取 `references/site-patterns/xiaohongshu.md`。小红书前端频繁改版，这个文件记录了历次成功的选择器和失败的尝试，能避免重复踩坑。
+AI 收到用户输入后，**立即同时发起以下两路，互不等待**：
 
-### Step 1.5: 确认运行模式
+#### 步骤 1a：环境检查
 
-读取 `references/site-patterns/xiaohongshu.md` 的「用户习惯」段落，检查「运行模式」字段。
+读取 `references/site-patterns/xiaohongshu.md` 的「本地环境」段落，检查 `环境状态`、`Playwright依赖`、`Chromium浏览器` 三个字段。
+
+**如果本地环境为「未设置」或「未就绪」**：
+
+```bash
+SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+cd "${SKILL_DIR}" && npm install playwright rebrowser-patches exceljs --registry=https://registry.npmmirror.com 2>/dev/null || npm install playwright rebrowser-patches exceljs
+PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright/ npx playwright install chromium 2>/dev/null || npx playwright install chromium
+```
+
+执行时必须持续给用户反馈当前阶段，至少包括：
+- 正在检查 npm 依赖
+- 正在安装 npm 依赖（如需要）
+- 正在检查 Playwright Chromium
+- 正在下载 Playwright Chromium（首次安装可能较慢）
+- 环境初始化完成
+
+安装完成后，更新 `references/site-patterns/xiaohongshu.md` 的「本地环境」段落：
+- `环境状态: 已就绪`
+- `Playwright依赖: 已安装`
+- `Chromium浏览器: 已安装`
+- `最后检查时间: <当前日期>`
+
+**如果环境已就绪**：直接标记 1a 完成。
+
+**如果安装失败**：把失败原因和当前阶段告诉用户，并在站点经验文件里补充备注，避免静默卡死。
+
+#### 步骤 1b：生成任务规格
+
+**不依赖 1a，立即从用户原始提示词生成 task spec**（1b 不读取任何本地文件）：
+
+```json
+{
+  "keyword": "医美",
+  "post_relevance": {
+    "include": ["医美", "热玛吉", "超声刀", "鼻子", "双眼皮"],
+    "exclude": ["避雷", "翻车", "政策", "赛道"]
+  },
+  "comment_filter": {
+    "include": ["多少钱", "想做", "求推荐", "适合做什么"],
+    "exclude": ["我是做", "加我", "合作", "私信"]
+  },
+  "semantic_focus": "只保留明确购买意向用户"
+}
+```
+
+落盘：
+
+```bash
+node "${SKILL_DIR}/scripts/save-task-spec.js" \
+  --keyword "<关键词>" \
+  --json '<task-spec-json>'
+```
+
+路径：`data/task-specs/<timestamp>_<keyword>.json`
+
+---
+
+**等待**：1a 和 1b **均完成**后，才进入步骤 2。
+如果任意一路失败，停止并告知用户失败原因。
+
+---
+
+### 步骤 2：运行模式确认
+
+仅在 **步骤 1a 已确认环境就绪后**，再读取 `references/site-patterns/xiaohongshu.md` 的「用户习惯」段落，检查「运行模式」字段。
 
 **如果运行模式为「未设置」（首次使用）**：
-
-用文字询问用户：
 
 > 首次使用，请选择浏览器运行方式：
 >
@@ -118,14 +189,12 @@ PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright npx playw
 >
 > 选择后会记住你的偏好，后续默认使用这个模式。如果以后想切换，跟我说「切换到后台模式」或「切换到打开浏览器模式」即可。
 
-用户选择后：
-1. 更新 `references/site-patterns/xiaohongshu.md` 的「用户习惯」段落：
-   - A → `运行模式: 后台静默运行`
-   - B → `运行模式: 打开浏览器运行`
-   - 同时更新 `设置时间` 为当前日期
-2. 根据选择决定是否在采集命令中加 `--headed` 参数
+用户选择后更新「用户习惯」段落：
+- A → `运行模式: 后台静默运行`
+- B → `运行模式: 打开浏览器运行`
+- 同时更新 `设置时间` 为当前日期
 
-**如果已有记录**：直接使用记录的模式，不再询问。
+**如果已有记录**：直接使用记录的模式，跳过询问。
 
 **如果用户主动要求切换模式**：更新站点经验文件中的记录。
 
@@ -135,22 +204,20 @@ PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright npx playw
 | 后台静默运行 | headless: true（默认，不加 --headed） |
 | 打开浏览器运行 | --headed |
 
-### Step 2: 运行 Playwright 采集脚本
+---
+
+### 步骤 3：数据采集
 
 > 所有路径均相对于 skill 基目录（即 `SKILL.md` 所在目录），运行时用绝对路径拼接。
+> 此步骤默认 **步骤 1a 已完成环境检查**，这里不再重复安装依赖或浏览器。
+> 多关键词时，本步骤按关键词顺序**串行**执行，共享同一 cookie 文件。
 
 ```bash
 SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
-# 如果是 Claude 调用，SKILL_DIR 为 SKILL.md 所在目录的绝对路径
-
-# 安装依赖（淘宝镜像优先，失败回退官方源）
-cd "${SKILL_DIR}" && npm install --registry=https://registry.npmmirror.com 2>/dev/null || npm install 2>/dev/null
-
-# 安装 Playwright 浏览器（国内 CDN 加速，失败回退官方）
-PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright npx playwright install chromium 2>/dev/null || npx playwright install chromium
 
 node "${SKILL_DIR}/scripts/xhs-scraper.js" \
   --keyword "<关键词>" \
+  --task-spec "<task-spec-path>" \
   --max-posts <数量> \
   --max-comments <数量> \
   --speed normal \
@@ -160,6 +227,7 @@ node "${SKILL_DIR}/scripts/xhs-scraper.js" \
 
 **CLI 参数**:
 - `--keyword` — 搜索关键词（必填）
+- `--task-spec` — 步骤 1b 生成的 task spec 文件路径（必填）
 - `--max-posts` — 最多分析帖子数（默认 10，50/50 混合选取：前半顺序+后半随机）
 - `--max-comments` — 每帖最大评论数（默认 0=全部，硬上限 500）
 - `--speed slow|normal|fast` — 滚动速度（默认 normal，推荐首次使用 slow）
@@ -169,83 +237,153 @@ node "${SKILL_DIR}/scripts/xhs-scraper.js" \
 
 **帖子选取策略**: 搜索结果加载 2x 候选帖子，前半按搜索排序选取（热度优先），后半从剩余帖子中随机抽取（覆盖长尾内容）。
 
-**增量去重**: 同一关键词多次运行时，脚本自动读取已有输出文件，跳过已采集的帖子 URL，新结果与旧结果合并保存。不同关键词的数据互不影响。
+**增量去重**: 同一关键词多次运行时，脚本自动读取已有输出文件，跳过已采集的帖子 URL，新结果与旧结果合并保存。
 
-**登录机制**: 默认无头运行。首次运行时脚本从 DOM 提取登录 QR 码图片并用系统默认程序打开（跨平台：Windows/macOS/Linux），用户扫码后自动检测登录完成并保存 cookie。后续运行自动复用 cookie。加 `--headed` 参数以有头模式运行（用于调试）。
+**登录机制**: 默认无头运行。首次运行时脚本从 DOM 提取登录 QR 码图片并用系统默认程序打开，用户扫码后自动检测登录完成并保存 cookie。后续运行自动复用 cookie。
 
-**反检测机制**: 脚本集成 rebrowser-patches（修复 CDP leak、navigator.webdriver）、随机 viewport 偏移、UA 轮换、反检测 initScript（plugins/languages/permissions 伪装）。
+**反检测机制**: 脚本集成 rebrowser-patches（修复 CDP leak、navigator.webdriver）、随机 viewport 偏移、UA 轮换、反检测 initScript。
 
 **输出产物**:
-- `data/comments_<关键词>.json` — 帖子和评论数据（按关键词分文件）
-- `data/screenshots/{noteId}.png` — 每篇帖子的全景截图（帖子内容+评论区）
+- `data/comments_<关键词>.json` — 帖子和评论数据（每帖含 `noteId` 字段）
+- `data/screenshots/{noteId}.png` — 每篇帖子截图
 
 **如果脚本报错**：检查站点经验文件的「已知陷阱」，尝试更新选择器。脚本修复后追加发现到经验文件。
 
-### Step 2.5: 验证帖子相关性
+---
 
-采集完成后、分析之前，验证每篇帖子是否真的与搜索关键词相关：
-
-1. 读取 `data/comments.json`，检查每篇帖子的 `title` 字段
-2. 抽样检查前 10 条评论内容，判断话题是否与关键词一致
-3. **如果帖子内容明显偏离关键词**（如标题含关键词但评论全是无关内容），标记为「不相关」并在后续分析中跳过
-4. 在最终报告中说明跳过原因
-
-> 此步骤由 Claude 直接判断，不需要脚本。目的是防止标题党帖子浪费分析资源。
-
-### Step 3: AI 分析兴趣度（两阶段）
-
-分两阶段的原因：评论中通常 30-60% 是噪声（纯表情、广告、作者回复）。先用脚本快速过滤确定性噪声，再让 Claude 集中精力做语义分析——既省 token 又提高准确率。
-
-#### 阶段 A: 脚本粗筛
-
-运行粗筛脚本，过滤确定性噪声，保留所有可能有价值的评论：
+### 步骤 4：粗筛
 
 ```bash
 node "${SKILL_DIR}/scripts/filter-comments.js" \
   --input "${SKILL_DIR}/data/comments_<关键词>.json" \
-  --output "${SKILL_DIR}/data/filtered_<关键词>.json"
+  --output "${SKILL_DIR}/data/candidates_<关键词>.json" \
+  --task-spec "<task-spec-path>"
 ```
 
-粗筛只去噪声，**不做兴趣度判断**，确保不遗漏潜在用户。
+粗筛只做确定性筛选，**不做语义判断**。它负责：
+- 读取 task spec
+- 排除明显无关帖子
+- 排除明显噪声/引流评论
+- 保留命中粗筛信号的候选评论
 
-#### 阶段 B: Claude 语义精筛
+输出：`data/candidates_<关键词>.json`
 
-读取 `data/filtered_<关键词>.json`，**逐帖按批**对每条评论进行三重判断：
+---
 
-**1. 购买/合作意向**（关键词匹配）
-- "怎么买""求链接""多少钱""在哪买""想入手""求推荐""有链接吗""怎么购买"
+### 步骤 5 [并行精筛]
 
-**2. 深度内容相关**（语义判断）
-- 实质性提问、经验分享、深入讨论、对比分析
+读取 `data/candidates_<kw>.json`，对每个帖子**独立分发**精筛任务。
 
-**3. 用户自定义标准**
-- 根据用户提供的 `interest_criteria` 灵活判断
+**启动前**：创建目录并清空残留分片（确保幂等）：
+
+```bash
+mkdir -p "${SKILL_DIR}/data/analysis_posts/<关键词>"
+rm -f "${SKILL_DIR}/data/analysis_posts/<关键词>"/*.json
+```
+
+#### 分发策略（按运行平台）
+
+**Claude Code（Agent tool）/ Openclaw（Sub-Agent）**：
+
+对 candidates 中每帖，调用 Agent tool 或 Sub-Agent 派出独立 sub-agent。**最多同时运行 3 个 sub-agent**（MAX_CONCURRENT_AGENTS = 3），超出的排队等待。
+
+**每个 sub-agent 的完整任务描述**（逐字传递给 sub-agent）：
+
+```
+你是一个评论语义分析 agent，只负责分析一篇帖子的评论。
+
+任务：
+1. 读取以下 task spec 文件，获取 semantic_focus 字段：<task-spec-path>
+2. 对以下候选评论逐条进行语义判断（禁止用关键词匹配代替语义判断）：
+   - interestTags: 逗号分隔字符串，如 "购买意向, 咨询"
+   - interestScore: 1-10 分
+   - reason: 判断理由（一句话）
+3. 只保留 interestScore >= 6 的评论
+4. 将结果写入指定输出路径（JSON 格式）
+
+帖子数据：
+- noteId: <noteId>
+- title: <帖子标题>
+- url: <帖子链接>
+- screenshotFile: <截图路径>
+- commentCount: <原始评论总数>
+- 候选评论列表: <comments-json>
+
+输出格式（写入 <output-path>）：
+{
+  "postId": "<noteId>",
+  "title": "<帖子标题>",
+  "url": "<帖子链接>",
+  "screenshotFile": "<截图路径>",
+  "totalComments": <commentCount 转为数字>,
+  "collectedComments": <候选评论条数>,
+  "validComments": [
+    {
+      "username": "...",
+      "userId": "...",
+      "content": "...",
+      "ipLocation": "...",
+      "interestTags": "购买意向, 咨询",
+      "interestScore": 8,
+      "reason": "...",
+      "profileUrl": "..."
+    }
+  ]
+}
+
+输出路径：<SKILL_DIR>/data/analysis_posts/<关键词>/<noteId>.json
+```
+
+所有 sub-agent 全部完成后，进入步骤 6。
+
+**其他平台（串行降级）**：
+
+> ⚠️ 当前环境不支持 Agent 并行分发，改为串行精筛模式，速度较慢（每帖逐一处理）。
+
+读取 `data/candidates_<关键词>.json`，按原有逐帖串行精筛流程处理，将所有结果合并写入 `data/analysis_<关键词>.json`（格式见步骤 6 输出），**跳过步骤 6**，直接进入步骤 7。
 
 每条评论输出：
-- `interest_tags`: 标签数组，如 `["购买意向", "深度讨论"]`
-- `interest_score`: 1-10 分
+- `interestTags`: 逗号分隔字符串，如 `"购买意向, 深度讨论"`
+- `interestScore`: 1-10 分
 - `reason`: 判断理由（一句话）
 
 **跳过**: 纯路过评论（"哈哈""666""👍"）、广告引流（含外链或"加我"）
 
-**筛选**: `score >= 6` 为感兴趣用户
+**筛选**: `interestScore >= 6` 为感兴趣用户
 
-### Step 4: 生成 Excel
+---
+
+### 步骤 6：合并精筛结果
+
+> 仅在**并行精筛路径**下执行。串行降级路径跳过此步骤。
+
+```bash
+node "${SKILL_DIR}/scripts/merge-analysis.js" \
+  --keyword "<关键词>" \
+  --candidates "${SKILL_DIR}/data/candidates_<关键词>.json" \
+  --posts-dir "${SKILL_DIR}/data/analysis_posts/<关键词>" \
+  --output "${SKILL_DIR}/data/analysis_<关键词>.json"
+```
+
+脚本按 candidates.json 的帖子顺序合并分片，失败率 > 50% 时中止并告知用户。
+
+---
+
+### 步骤 7：生成 Excel
 
 > **禁止自己编写 Excel 生成代码。必须调用 `generate-excel.js` 脚本。**
 > 脚本已实现完整的 16 列布局、帖子截图嵌入、条件格式、下拉选择等功能。
 > 自行编写会导致命名格式不一致、功能缺失等问题。
 > 输出路径格式为 `output/<关键词>_<YYYYMMDD>_<HH-mm>.xlsx`，由脚本自动生成。
 
-将 Step 3 的分析结果保存为 `data/analysis_<关键词>.json`，然后运行：
+将 步骤 5 的 AI 分析结果保存为 `data/analysis_<关键词>.json`。`exceljs` 依赖已在步骤 1a 完成环境安装，此处直接运行：
 
 ```bash
-cd "${SKILL_DIR}" && npm install exceljs --save --registry=https://registry.npmmirror.com 2>/dev/null || npm install exceljs --save 2>/dev/null
 node "${SKILL_DIR}/scripts/generate-excel.js" \
   --input "${SKILL_DIR}/data/analysis_<关键词>.json"
 ```
 
-**analysis.json 格式**（由 Claude 在 Step 3 后生成，按帖子分组）：
+**analysis.json 格式**（由步骤 5 串行精筛或步骤 6 合并后生成）：
 
 **Example:**
 ```json
@@ -268,16 +406,6 @@ node "${SKILL_DIR}/scripts/generate-excel.js" \
           "interestScore": 8,
           "reason": "明确询问价格和机构，有强烈消费意向",
           "profileUrl": "https://www.xiaohongshu.com/user/profile/5f8a1b2c3d4e5f6a7b8c9d0e"
-        },
-        {
-          "username": "护肤达人Lisa",
-          "userId": "6a7b8c9d0e1f2a3b4c5d6e7f",
-          "content": "我去年做的超声刀，恢复期比热玛吉短，但效果维持差不多。考虑今年换热玛吉试试",
-          "ipLocation": "上海",
-          "interestTags": "深度讨论, 购买意向",
-          "interestScore": 7,
-          "reason": "有医美经验且在对比项目，近期有消费计划",
-          "profileUrl": "https://www.xiaohongshu.com/user/profile/6a7b8c9d0e1f2a3b4c5d6e7f"
         }
       ]
     }
@@ -285,9 +413,7 @@ node "${SKILL_DIR}/scripts/generate-excel.js" \
 }
 ```
 
-**Excel 布局**（用户×帖子为中心，16列潜客管理表）：
-
-行粒度：一行 = 一个用户在一个帖子下。同一用户同帖子多条评论用编号合并（①xxx ②xxx 分行展示）。
+**Excel 布局**（16列潜客管理表，4区域分色表头）：
 
 | 区域 | 列 | 说明 |
 |------|-----|------|
@@ -308,30 +434,55 @@ node "${SKILL_DIR}/scripts/generate-excel.js" \
 | 跟进管理 | 跟进状态 | 待跟进/已联系/有意向/已成交/已流失（下拉选择） |
 | 跟进管理 | 负责人 | 团队成员姓名 |
 
-4区域分色表头（蓝/绿/金/红），帖子间交替背景色，自动筛选启用。
-
 **输出路径**: `<SKILL_DIR>/output/<keyword>_<YYYYMMDD>_<HH-mm>.xlsx`
 
-### Step 5: 更新站点经验
+---
+
+### 步骤 8：清理临时文件
+
+仅在整个流程**成功完成**后执行。
+
+```bash
+# 只删当前关键词的 task spec
+node "${SKILL_DIR}/scripts/cleanup-task-specs.js" --keyword "<关键词>"
+
+# 清理并行精筛分片（目录可能不存在，rm -rf 安全处理）
+rm -rf "${SKILL_DIR}/data/analysis_posts/<关键词>"
+```
+
+**如中途失败**：保留 task spec 和分片文件以便复盘，不自动删除。
+
+---
+
+### 步骤 9：更新站点经验
 
 执行过程中如有新发现（选择器变化、新陷阱、有效模式），追加到 `references/site-patterns/xiaohongshu.md` 对应段落并附日期标记。这些经验帮助下次运行更顺畅。
 
 ## 数据管道总览
 
 ```
-用户输入关键词（如"医美"）
+用户输入关键词
     ↓
-Step 1.5: 确认运行模式（首次询问，后续自动）
+步骤 1 [并行启动]
+  ├── 1a：读取站点经验 + 确认本地环境
+  └── 1b：生成任务规格 → data/task-specs/<ts>_<kw>.json
+    ↓ (1a 和 1b 均完成)
+步骤 2：运行模式确认（首次询问，后续跳过）
     ↓
-Step 2: xhs-scraper.js → data/comments_医美.json + data/screenshots/
+步骤 3：xhs-scraper.js → data/comments_<kw>.json（多关键词时串行）
     ↓
-Step 2.5: AI 验证帖子相关性（标记不相关帖子）
+步骤 4：filter-comments.js → data/candidates_<kw>.json
     ↓
-Step 3A: filter-comments.js → data/filtered_医美.json
+步骤 5 [并行精筛，最多 3 并发]
+  ├── sub-agent (帖子1) → data/analysis_posts/<kw>/noteId1.json
+  ├── sub-agent (帖子2) → data/analysis_posts/<kw>/noteId2.json
+  └── sub-agent (帖子N) → data/analysis_posts/<kw>/noteIdN.json
+    ↓ (全部完成 / 串行降级直接输出)
+步骤 6：merge-analysis.js → data/analysis_<kw>.json
     ↓
-Step 3B: AI 语义精筛 → data/analysis_医美.json
+步骤 7：generate-excel.js → output/<kw>_<YYYYMMDD>_<HH-mm>.xlsx
     ↓
-Step 4: generate-excel.js → output/医美_20260325_19-00.xlsx
+步骤 8：cleanup-task-specs.js --keyword <kw> + rm -rf analysis_posts/<kw>/
 ```
 
 ## 参考文件
@@ -345,9 +496,9 @@ Step 4: generate-excel.js → output/医美_20260325_19-00.xlsx
 
 ## 注意事项
 
-- 脚本内置人类化延迟（300ms-2.5s）和 viewport 比例滚动——这些是防反爬的核心机制，绕过会导致账号被风控
+- 脚本内置人类化延迟（300ms-2.5s）、多段 viewport 比例滚动，以及下滑后的偶发小幅上滑回拉——这些是防反爬的核心机制，绕过会导致账号被风控
 - 首次使用推荐 `--speed slow`，因为新 cookie 的信任度低，慢速操作更安全
 - 单次建议不超过 10 篇帖子——超过这个量级，小红书的行为分析系统容易标记异常
 - cookie 过期时脚本会自动暂停并弹出 QR 码要求重新登录
 - 如遇滑块验证码，需用户手动处理后脚本继续执行
-- 国内网络环境下，所有安装命令默认使用淘宝镜像（npmmirror.com），失败时回退官方源。Playwright 浏览器下载通过 `PLAYWRIGHT_DOWNLOAD_HOST` 环境变量加速
+- 国内网络环境下，所有安装命令默认使用阿里镜像源（npmmirror），失败时回退官方源。Playwright 浏览器下载通过 `PLAYWRIGHT_DOWNLOAD_HOST` 环境变量加速
