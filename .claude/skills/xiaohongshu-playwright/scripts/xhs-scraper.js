@@ -1059,6 +1059,32 @@ function loadExistingData(outputPath, keyword) {
   }
 }
 
+// ─── 增量保存（每帖采完立即写盘，noteId 去重） ───
+function appendPostResult(outputPath, keyword, postData) {
+  let existing = { keyword, scrapeTime: new Date().toISOString(), posts: [] };
+  if (fs.existsSync(outputPath)) {
+    try {
+      existing = JSON.parse(fs.readFileSync(outputPath, "utf-8"));
+    } catch {
+      // 文件损坏时从空开始
+    }
+  }
+
+  const noteId = postData.noteId;
+  const existingIds = new Set(existing.posts.map((p) => p.noteId));
+  if (existingIds.has(noteId)) {
+    return false; // 已存在，跳过
+  }
+
+  existing.posts.push(postData);
+  existing.scrapeTime = new Date().toISOString();
+
+  const dir = path.dirname(outputPath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(outputPath, JSON.stringify(existing, null, 2), "utf-8");
+  return true;
+}
+
 // ─── 评论加载状态机（对应 Python feed_detail.py: _load_all_comments） ───
 async function loadAllComments(page, maxComments, speed, detailContext) {
   // 硬上限 500，防止极端情况
