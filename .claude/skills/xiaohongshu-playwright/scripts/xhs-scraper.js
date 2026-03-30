@@ -1228,41 +1228,40 @@ async function extractComments(page, post, maxComments, speed, detailContext) {
 
 // ─── Worker Page 模式：处理单个帖子 ───
 async function processPost(workerPage, post, opts) {
-  try {
-    await applyPreGotoHumanDelay(workerPage);
-    await workerPage.goto(post.url, { waitUntil: "domcontentloaded", timeout: 15000 });
-    await navigationDelay();
+  await applyPreGotoHumanDelay(workerPage);
+  await workerPage.goto(post.url, { waitUntil: "domcontentloaded", timeout: 15000 });
+  await applyPostGotoHumanDelay(workerPage);
 
-    const feedId = post.noteId || extractNoteId(post.url);
-    const session = await probeDetailSession(workerPage, feedId);
-    if (!session.ok) {
-      throw new Error("DetailSessionLostError: worker page session invalid");
-    }
-
-    const detailContext = {
-      mode: "fullpage",
-      rootSelector: "",
-      scrollMode: session.scrollMode,
-      scrollSelector: session.scrollSelector,
-    };
-
-    const postData = await extractComments(
-      workerPage,
-      post,
-      opts.maxComments,
-      opts.speed,
-      detailContext
-    );
-
-    _workerState.postCount++;
-    _workerState.consecutiveContextErrors = 0;
-    _workerState.consecutiveRateLimits = 0;
-
-    return postData;
-  } catch (e) {
-    console.error(`  ❌ processPost 失败: ${e.message}`);
-    throw e;
+  if (await checkRateLimit(workerPage)) {
+    throw new Error("300013: 触发频率限制");
   }
+
+  const feedId = post.noteId || extractNoteId(post.url);
+  const session = await probeDetailSession(workerPage, feedId);
+  if (!session.ok) {
+    throw new Error(`DetailSessionLostError: 详情页未就绪 (noteId=${feedId}, active=${session?.activeNoteId})`);
+  }
+
+  const detailContext = {
+    mode: "fullpage",
+    rootSelector: "",
+    scrollMode: session.scrollMode,
+    scrollSelector: session.scrollSelector,
+  };
+
+  const postData = await extractComments(
+    workerPage,
+    post,
+    opts.maxComments,
+    opts.speed,
+    detailContext
+  );
+
+  _workerState.postCount++;
+  _workerState.consecutiveContextErrors = 0;
+  _workerState.consecutiveRateLimits = 0;
+
+  return postData;
 }
 
 // ─── Worker Page 模式：带重试的帖子处理 ───
@@ -1273,14 +1272,32 @@ async function processPostWithRetry(context, post, opts, maxRetries = 3) {
       const postData = await processPost(workerPage, post, opts);
       return postData;
     } catch (e) {
-      console.warn(`  ⚠️ 第 ${attempt}/${maxRetries} 次尝试失败: ${e.message}`);
+      const message = e?.message || String(e);
+      console.warn(`  ⚠️ 第 ${attempt}/${maxRetries} 次尝试失败: ${message}`);
 
-      if (attempt < maxRetries) {
-        await sleepRandom(2000, 3000);
-        await rebuildWorkerPage(context, `重试前重建 (attempt ${attempt})`);
+      if (/DetailSessionLostError|Execution context was destroyed|Cannot find context/i.test(message)) {
+        _workerState.consecutiveContextErrors++;
+        await rebuildWorkerPage(context, `会话丢失 (attempt ${attempt})`);
+      } else if (/300013|访问频繁/.test(message)) {
+        _workerState.consecutiveRateLimits++;
+        _workerState.rateLimitHits++;
+        const cooldown = randomInt(15000, 30000) + Math.min(attempt * 2000, 10000);
+        console.log(`  ⏳ 限流冷却 ${Math.round(cooldown / 1000)}s...`);
+        await sleepRandom(cooldown, cooldown + 2000);
+        if (_workerState.rateLimitHits >= 2) {
+          _workerState.extraPostGap = Math.min(_workerState.extraPostGap + 3000, 15000);
+        }
       } else {
-        console.error(`  ❌ 所有重试失败，跳过帖子: ${post.url}`);
+        await sleepRandom(2000, 3000);
+      }
+
+      if (attempt === maxRetries) {
+        console.error(`  ❌ ${maxRetries} 次尝试均失败，跳过帖子: ${post.url}`);
         return null;
+      }
+
+      if (shouldRebuildWorker()) {
+        await rebuildWorkerPage(context, `重建检查 (attempt ${attempt})`);
       }
     }
   }
@@ -1462,10 +1479,8 @@ async function main() {
     for (let i = 0; i < posts.length; i++) {
       console.log(`\n📌 [${i + 1}/${posts.length}] 处理帖子...`);
 
-      if (i > 0 && i % REBUILD_CHECK_INTERVAL === 0) {
-        if (shouldRebuildWorker()) {
-          await rebuildWorkerPage(context, `定期检查 (每 ${REBUILD_CHECK_INTERVAL} 帖)`);
-        }
+      if (shouldRebuildWorker()) {
+        await rebuildWorkerPage(context, `主动重建 (已处理 ${_workerState.postCount} 帖)`);
       }
 
       const postData = await processPostWithRetry(context, posts[i], opts);
