@@ -222,18 +222,6 @@ const SEARCH_RESULT_LINK_SELECTORS = [
 ];
 const LOGIN_MODAL_SELECTOR =
   ".login-container, [class*='login-modal'], [class*='LoginModal']";
-const DETAIL_MODAL_SELECTORS = [
-  '[class*="note-detail-modal"]',
-  '[class*="NoteDetailModal"]',
-  '.note-detail-mask',
-];
-const DETAIL_CLOSE_SELECTORS = [
-  '[class*="note-detail-modal"] [class*="close"]',
-  '[class*="NoteDetailModal"] [class*="close"]',
-  '[class*="close-circle"]',
-  '[class*="close-button"]',
-  '[class*="CloseBtn"]',
-];
 const DETAIL_SCROLL_SELECTORS = [
   '.note-scroller',
   '[class*="note-scroller"]',
@@ -666,27 +654,6 @@ async function searchPosts(page, keyword, maxPosts, context, cookiePath) {
   return { posts: selected, searchUrl };
 }
 
-// ─── 关闭搜索页上的通用覆盖层（不关闭详情弹窗） ───
-async function dismissOverlays(page) {
-  try {
-    const overlaySelectors = [
-      '[class*="close-button"]',
-      '[class*="CloseBtn"]',
-      '.close',
-    ];
-    for (const sel of overlaySelectors) {
-      const btn = await page.$(sel);
-      if (btn) {
-        const isVisible = await btn.isVisible().catch(() => false);
-        if (isVisible) {
-          await btn.click().catch(() => null);
-          await sleepRandom(...DELAYS.REACTION_TIME);
-        }
-      }
-    }
-  } catch {}
-}
-
 function parseStateComments(noteDetailMap, feedId) {
   let noteData = noteDetailMap[feedId];
   if (!noteData) {
@@ -744,40 +711,6 @@ function parseStateComments(noteDetailMap, feedId) {
   }
 
   return { note, comments };
-}
-
-async function resolveDetailContext(page, mode) {
-  if (mode !== "modal") {
-    return {
-      mode,
-      rootSelector: "",
-      scrollMode: "window",
-      scrollSelector: "",
-    };
-  }
-
-  const context = await page.evaluate(
-    ({ modalSelectors, scrollSelectors }) => {
-      const isVisible = (el) =>
-        !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-      const rootSelector =
-        modalSelectors.find((selector) => isVisible(document.querySelector(selector))) || "";
-      const scrollSelector =
-        scrollSelectors.find((selector) => {
-          const el = document.querySelector(selector);
-          return isVisible(el) && el.scrollHeight > el.clientHeight + 20;
-        }) || "";
-
-      return {
-        rootSelector,
-        scrollMode: scrollSelector ? "container" : "window",
-        scrollSelector,
-      };
-    },
-    { modalSelectors: DETAIL_MODAL_SELECTORS, scrollSelectors: DETAIL_SCROLL_SELECTORS }
-  );
-
-  return { mode, ...context };
 }
 
 async function getScrollMetrics(page, detailContext) {
@@ -932,66 +865,6 @@ async function scrollToCommentsArea(page, detailContext) {
   await sleepRandom(500, 1000);
 }
 
-// ─── 滚动到最后一条评论（兼容弹窗滚动容器） ───
-async function scrollToLastComment(page, detailContext) {
-  await page.evaluate((ctx) => {
-    const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
-    const comments =
-      root?.querySelectorAll(".parent-comment") || document.querySelectorAll(".parent-comment");
-    if (comments.length > 0) {
-      comments[comments.length - 1].scrollIntoView({ behavior: "smooth", block: "end" });
-    }
-  }, detailContext);
-}
-
-// ─── 点击展开回复按钮（兼容弹窗 root） ───
-async function clickShowMoreButtons(page, detailContext, maxRepliesThreshold = 50) {
-  return page.evaluate(
-    ({ ctx, threshold }) => {
-      const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
-      const btns = root?.querySelectorAll(".show-more") || [];
-      let clicked = 0;
-      let skipped = 0;
-      btns.forEach((btn) => {
-        const text = btn.textContent || "";
-        const match = text.match(/展开\s*(\d+)\s*条回复/);
-        if (match && parseInt(match[1], 10) > threshold) {
-          skipped++;
-          return;
-        }
-        btn.click();
-        clicked++;
-      });
-      return { clicked, skipped };
-    },
-    { ctx: detailContext, threshold: maxRepliesThreshold }
-  );
-}
-
-async function getCommentCount(page, detailContext) {
-  return page.evaluate((ctx) => {
-    const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
-    return root?.querySelectorAll(".parent-comment").length || 0;
-  }, detailContext);
-}
-
-async function checkEndContainer(page, detailContext) {
-  return page.evaluate((ctx) => {
-    const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
-    const el = root?.querySelector(".end-container") || document.querySelector(".end-container");
-    if (!el) return false;
-    const text = el.textContent.trim().toUpperCase();
-    return text.includes("THE END") || text.includes("THEEND");
-  }, detailContext);
-}
-
-async function checkNoComments(page, detailContext) {
-  return page.evaluate((ctx) => {
-    const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
-    const el = root?.querySelector(".no-comments-text") || document.querySelector(".no-comments-text");
-    return el ? el.textContent.includes("这是一片荒地") : false;
-  }, detailContext);
-}
 
 // ─── 加载已有采集数据（帖子级去重） ───
 function loadExistingData(outputPath, keyword) {
@@ -1381,6 +1254,10 @@ async function processPost(workerPage, post, opts) {
       detailContext
     );
 
+    _workerState.postCount++;
+    _workerState.consecutiveContextErrors = 0;
+    _workerState.consecutiveRateLimits = 0;
+
     return postData;
   } catch (e) {
     console.error(`  ❌ processPost 失败: ${e.message}`);
@@ -1389,10 +1266,10 @@ async function processPost(workerPage, post, opts) {
 }
 
 // ─── Worker Page 模式：带重试的帖子处理 ───
-async function processPostWithRetry(browser, post, opts, maxRetries = 3) {
+async function processPostWithRetry(context, post, opts, maxRetries = 3) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const workerPage = await getWorkerPage(browser);
+      const workerPage = await getWorkerPage(context);
       const postData = await processPost(workerPage, post, opts);
       return postData;
     } catch (e) {
@@ -1400,7 +1277,7 @@ async function processPostWithRetry(browser, post, opts, maxRetries = 3) {
 
       if (attempt < maxRetries) {
         await sleepRandom(2000, 3000);
-        await rebuildWorkerPage(browser, `重试前重建 (attempt ${attempt})`);
+        await rebuildWorkerPage(context, `重试前重建 (attempt ${attempt})`);
       } else {
         console.error(`  ❌ 所有重试失败，跳过帖子: ${post.url}`);
         return null;
@@ -1587,11 +1464,11 @@ async function main() {
 
       if (i > 0 && i % REBUILD_CHECK_INTERVAL === 0) {
         if (shouldRebuildWorker()) {
-          await rebuildWorkerPage(browser, `定期检查 (每 ${REBUILD_CHECK_INTERVAL} 帖)`);
+          await rebuildWorkerPage(context, `定期检查 (每 ${REBUILD_CHECK_INTERVAL} 帖)`);
         }
       }
 
-      const postData = await processPostWithRetry(browser, posts[i], opts);
+      const postData = await processPostWithRetry(context, posts[i], opts);
 
       if (postData) {
         const postResult = {
@@ -1606,9 +1483,10 @@ async function main() {
 
         newPosts.push(postResult);
 
-        const mergedPosts = [...existingPosts, ...newPosts];
-        appendPostResult(opts.output, opts.keyword, mergedPosts);
-        console.log(`  💾 已增量保存 (累计 ${mergedPosts.length} 篇)`);
+        const saved = appendPostResult(opts.output, opts.keyword, postResult);
+        if (saved) {
+          console.log(`  💾 已增量保存到 ${path.basename(opts.output)} (累计 ${newPosts.length + existingPosts.length} 篇)`);
+        }
       } else {
         console.warn(`  ⚠️ 帖子处理失败，已跳过`);
       }
