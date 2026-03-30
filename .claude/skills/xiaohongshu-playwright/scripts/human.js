@@ -25,6 +25,8 @@ const DELAYS = {
   SHORT_READ: [600, 1200],
   SCROLL_WAIT: [100, 200],
   POST_SCROLL: [300, 500],
+  POST_GAP: [5000, 10000],       // 帖子间基础间隔 5-10s
+  RATE_LIMIT_WAIT: [15000, 30000], // 遇到限流后等待 15-30s
 };
 
 // ========== 页面不可访问关键词 ==========
@@ -39,6 +41,14 @@ const INACCESSIBLE_KEYWORDS = [
   "仅作者可见",
   "因用户设置，你无法查看",
   "因违规无法查看",
+];
+
+// ========== 频率限制关键词 ==========
+const RATE_LIMIT_KEYWORDS = [
+  "安全限制",
+  "访问频繁",
+  "300013",
+  "请稍后再试",
 ];
 
 // ========== 常用 User-Agent 列表 ==========
@@ -136,6 +146,7 @@ module.exports = {
   CONFIG,
   DELAYS,
   INACCESSIBLE_KEYWORDS,
+  RATE_LIMIT_KEYWORDS,
   USER_AGENTS,
   sleepRandom,
   navigationDelay,

@@ -24,6 +24,7 @@ const path = require("path");
 const {
   CONFIG,
   DELAYS,
+  RATE_LIMIT_KEYWORDS,
   sleepRandom,
   navigationDelay,
   getScrollInterval,
@@ -268,8 +269,8 @@ async function checkLogin(page) {
   }
 }
 
-// ─── 手动登录流程（无头兼容：从 DOM 提取 QR 码图片 → 本地展示 → 轮询登录） ───
-async function manualLogin(page, context, cookiePath) {
+// ─── 手动登录流程（有头=浏览器内手动登录；无头=提取 QR 到本地展示） ───
+async function manualLogin(page, context, cookiePath, opts = {}) {
   console.log("\n⚠️  需要登录小红书");
 
   await page.goto("https://www.xiaohongshu.com/explore", {
@@ -277,33 +278,40 @@ async function manualLogin(page, context, cookiePath) {
   });
   await navigationDelay();
 
+  const headedMode = !!opts.headed;
   let qrExtracted = false;
-  try {
-    await page.waitForSelector(".qrcode-img", { timeout: 15000 });
-    const qrSrc = await page.evaluate(() => {
-      const img = document.querySelector(".qrcode-img");
-      return img?.src || "";
-    });
 
-    if (qrSrc && qrSrc.includes("base64,")) {
-      const base64Data = qrSrc.split("base64,")[1];
-      const qrDir = path.join(__dirname, "..", "data");
-      if (!fs.existsSync(qrDir)) fs.mkdirSync(qrDir, { recursive: true });
-      const qrPath = path.join(qrDir, "login_qrcode.png");
-      fs.writeFileSync(qrPath, Buffer.from(base64Data, "base64"));
-
-      console.log(`📱 QR 码已保存: ${qrPath}`);
-      console.log("⏳ 请用小红书 APP 扫描二维码登录...\n");
-      openFile(qrPath);
-      qrExtracted = true;
-    }
-  } catch {
-    console.warn("⚠️  QR 码提取失败，请在浏览器中手动登录");
-  }
-
-  if (!qrExtracted) {
-    console.log("📱 请在浏览器中完成登录（扫码或手机号）");
+  if (headedMode) {
+    console.log("📱 当前为打开浏览器运行：请直接在浏览器窗口中完成登录（扫码或手机号）");
     console.log("⏳ 登录完成后脚本会自动继续...\n");
+  } else {
+    try {
+      await page.waitForSelector(".qrcode-img", { timeout: 15000 });
+      const qrSrc = await page.evaluate(() => {
+        const img = document.querySelector(".qrcode-img");
+        return img?.src || "";
+      });
+
+      if (qrSrc && qrSrc.includes("base64,")) {
+        const base64Data = qrSrc.split("base64,")[1];
+        const qrDir = path.join(__dirname, "..", "data");
+        if (!fs.existsSync(qrDir)) fs.mkdirSync(qrDir, { recursive: true });
+        const qrPath = path.join(qrDir, "login_qrcode.png");
+        fs.writeFileSync(qrPath, Buffer.from(base64Data, "base64"));
+
+        console.log(`📱 QR 码已保存: ${qrPath}`);
+        console.log("⏳ 当前为后台静默运行，请用小红书 APP 扫描二维码登录...\n");
+        openFile(qrPath);
+        qrExtracted = true;
+      }
+    } catch {
+      console.warn("⚠️  QR 码提取失败，请改用打开浏览器运行，或检查页面登录弹层");
+    }
+
+    if (!qrExtracted) {
+      console.log("📱 后台静默运行未能成功提取二维码");
+      console.log("⏳ 如需继续，建议切换为打开浏览器运行后重试...\n");
+    }
   }
 
   const maxWait = 5 * 60 * 1000;
@@ -792,13 +800,41 @@ async function loadAllComments(page, maxComments, speed) {
   return { hasComments: count > 0 };
 }
 
+// ─── 检测页面是否命中频率限制（300013） ───
+async function checkRateLimit(page) {
+  try {
+    const text = await page.evaluate(() => document.body?.innerText || '');
+    return RATE_LIMIT_KEYWORDS.some((kw) => text.includes(kw));
+  } catch {
+    return false;
+  }
+}
+
 // ─── 提取单篇帖子评论（基于 __INITIAL_STATE__） ───
 async function extractComments(page, postUrl, maxComments, speed) {
-  console.log(`  📖 打开帖子: ${postUrl}`);
+  const MAX_RETRIES = 3;
 
-  await page.goto(postUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
-  await navigationDelay();
-  await sleepRandom(...DELAYS.HUMAN_DELAY);
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    console.log(`  📖 打开帖子${attempt > 1 ? `（第 ${attempt} 次尝试）` : ''}: ${postUrl}`);
+
+    await page.goto(postUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+    await navigationDelay();
+    await sleepRandom(...DELAYS.HUMAN_DELAY);
+
+    // 检测频率限制
+    if (await checkRateLimit(page)) {
+      if (attempt < MAX_RETRIES) {
+        const waitMs = DELAYS.RATE_LIMIT_WAIT[0] + Math.random() * (DELAYS.RATE_LIMIT_WAIT[1] - DELAYS.RATE_LIMIT_WAIT[0]);
+        console.warn(`  ⚠️ 触发频率限制（300013），等待 ${Math.round(waitMs / 1000)}s 后重试...`);
+        await sleepRandom(...DELAYS.RATE_LIMIT_WAIT);
+        continue;
+      }
+      console.error(`  ❌ 连续 ${MAX_RETRIES} 次触发频率限制，跳过此帖`);
+      return { title: "", author: "", commentCount: "0", comments: [], screenshotFile: "" };
+    }
+    // 限流检测通过，跳出重试循环进入正常提取流程
+    break;
+  }
 
   // 从 URL 提取 feedId
   const feedIdMatch = postUrl.match(/\/([a-f0-9]{24})\b/);
@@ -903,6 +939,130 @@ async function extractComments(page, postUrl, maxComments, speed) {
   };
 }
 
+
+
+function sanitizeKeywordForFilename(keyword) {
+  return String(keyword || 'keyword').replace(/[\\/:*?"<>|\s]+/g, '_').replace(/^_+|_+$/g, '') || 'keyword';
+}
+
+function detectInterest(content) {
+  const text = String(content || '').trim();
+  if (!text) return null;
+
+  const patterns = [
+    { re: /多少钱|价格|费用|贵不贵|预算|怎么收费|什么价|求[个]?价/, tags: ['购买意向', '咨询'], score: 8, reason: '明确询问价格或费用，消费意向较强' },
+    { re: /适合我吗|适不适合|我.*适合|我这种.*[能行]/, tags: ['咨询', '需求判断'], score: 8, reason: '在判断自身适合性，具备现实需求' },
+    { re: /在哪[买做弄]|哪里[买做弄]|哪家好|去哪[买做]|求推荐|有.{0,2}推荐|求链接|有链接/, tags: ['购买意向', '渠道咨询'], score: 8, reason: '明确咨询购买渠道或服务方，转化可能较高' },
+    { re: /想[做买]|准备[做买]|想入手|想试试|打算[做买]|种草了|被种草|心动了|怎么买/, tags: ['购买意向'], score: 7, reason: '表达了较明确的尝试或消费计划' },
+    { re: /效果怎么样|好不好用|值不值|有用吗|质量怎么样|靠谱吗|维持多久|有没有坑/, tags: ['深度讨论', '咨询'], score: 7, reason: '围绕效果或体验做决策前咨询，兴趣较高' },
+    { re: /我[买用做]过|我之前[买用做]|我去年[买用做]|亲身经历|入手了|已[购入买]/, tags: ['深度讨论', '经验用户'], score: 6, reason: '有真实使用或消费经历，长期关注相关话题' },
+  ];
+
+  for (const p of patterns) {
+    if (p.re.test(text)) {
+      return {
+        interestTags: p.tags.join(', '),
+        interestScore: p.score,
+        reason: p.reason,
+      };
+    }
+  }
+  return null;
+}
+
+function isRelevantPost(post, keyword) {
+  if (!keyword) return true;
+  const title = String(post.title || '');
+  if (title.includes(keyword)) return true;
+  const sample = (post.comments || []).slice(0, 10).map((c) => c.content || '').join(' ');
+  return sample.includes(keyword);
+}
+
+function buildAnalysis(result, keyword) {
+  const posts = [];
+  for (const post of result.posts || []) {
+    if (!isRelevantPost(post, keyword)) continue;
+
+    const users = new Map();
+    for (const c of post.comments || []) {
+      const hit = detectInterest(c.content);
+      if (!hit) continue;
+      const username = c.username || c.userName || '未知用户';
+      const userId = c.userId || '';
+      const key = `${username}::${userId}`;
+      if (!users.has(key)) {
+        users.set(key, {
+          username,
+          userId,
+          ipLocation: c.ipLocation || '',
+          profileUrl: c.profileUrl || (userId ? `https://www.xiaohongshu.com/user/profile/${userId}` : ''),
+          comments: [],
+          scores: [],
+          tags: new Set(),
+          reasons: [],
+        });
+      }
+      const user = users.get(key);
+      user.comments.push(String(c.content || '').trim());
+      user.scores.push(hit.interestScore);
+      hit.interestTags.split(/[,，]/).map((x) => x.trim()).filter(Boolean).forEach((t) => user.tags.add(t));
+      user.reasons.push(hit.reason);
+    }
+
+    const validComments = [...users.values()].map((u) => ({
+      username: u.username,
+      userId: u.userId,
+      content: u.comments.map((text, i) => `${i + 1}.${text}`).join(' '),
+      ipLocation: u.ipLocation,
+      interestTags: [...u.tags].join(', '),
+      interestScore: Math.max(...u.scores),
+      reason: [...new Set(u.reasons)].join('；').slice(0, 120),
+      profileUrl: u.profileUrl,
+    })).filter((u) => u.interestScore >= 6).sort((a, b) => b.interestScore - a.interestScore);
+
+    if (validComments.length) {
+      posts.push({
+        title: post.title || '',
+        url: post.url || '',
+        screenshotFile: post.screenshotFile || '',
+        totalComments: post.commentCount || (post.comments || []).length,
+        collectedComments: (post.comments || []).length,
+        validComments,
+      });
+    }
+  }
+  return { keyword, posts };
+}
+
+function runNodeScript(scriptPath, args = []) {
+  const { spawnSync } = require('child_process');
+  const result = spawnSync(process.execPath, [scriptPath, ...args], { stdio: 'inherit' });
+  if (result.status !== 0) {
+    throw new Error(`脚本执行失败: ${path.basename(scriptPath)} (exit ${result.status})`);
+  }
+}
+
+function runPostPipeline(opts, result) {
+  const skillDir = path.join(__dirname, '..');
+  const safeKeyword = sanitizeKeywordForFilename(opts.keyword);
+  const filteredPath = path.join(skillDir, 'data', `filtered_${safeKeyword}.json`);
+  const analysisPath = path.join(skillDir, 'data', `analysis_${safeKeyword}.json`);
+  const filterScript = path.join(__dirname, 'filter-comments.js');
+  const excelScript = path.join(__dirname, 'generate-excel.js');
+
+  console.log('\n🔁 开始自动执行后处理流程...');
+  runNodeScript(filterScript, ['--input', opts.output, '--output', filteredPath]);
+
+  const analysis = buildAnalysis(result, opts.keyword);
+  fs.writeFileSync(analysisPath, JSON.stringify(analysis, null, 2), 'utf-8');
+  const prospectCount = analysis.posts.reduce((sum, p) => sum + (p.validComments || []).length, 0);
+  console.log(`✅ 分析文件已生成: ${analysisPath}`);
+  console.log(`   相关帖子: ${analysis.posts.length}`);
+  console.log(`   潜客数量: ${prospectCount}`);
+
+  runNodeScript(excelScript, ['--input', analysisPath]);
+}
+
 // ─── 主流程 ───
 async function main() {
   const opts = parseArgs();
@@ -945,7 +1105,7 @@ async function main() {
     const isLoggedIn = hasCookies && (await checkLogin(page));
 
     if (!isLoggedIn) {
-      await manualLogin(page, context, opts.cookiePath);
+      await manualLogin(page, context, opts.cookiePath, opts);
     } else {
       console.log("✅ 已登录");
     }
@@ -996,11 +1156,12 @@ async function main() {
         console.error(`  ❌ 帖子处理失败: ${e.message}`);
       }
 
-      // 帖子间间隔：navigationDelay + READ_TIME（比之前更自然）
+      // 帖子间间隔：5-10s 基础间隔 + 1-2.5s 模拟阅读，防止频率限制
       if (i < posts.length - 1) {
+        await sleepRandom(...DELAYS.POST_GAP);
         await navigationDelay();
-        await sleepRandom(...DELAYS.READ_TIME);
-        console.log(`  ⏱️ 帖子间等待完成`);
+        const waitSec = Math.round((DELAYS.POST_GAP[0] + DELAYS.POST_GAP[1]) / 2000);
+        console.log(`  ⏱️ 帖子间等待 ~${waitSec}s 完成`);
       }
     }
 
@@ -1026,6 +1187,8 @@ async function main() {
     console.log(`   合计帖子: ${mergedPosts.length}`);
     console.log(`   合计评论: ${totalComments}`);
     console.log(`   输出: ${opts.output}`);
+
+    runPostPipeline(opts, result);
 
     await saveCookies(context, opts.cookiePath);
   } catch (e) {
