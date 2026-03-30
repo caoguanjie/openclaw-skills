@@ -1353,7 +1353,62 @@ async function extractComments(page, post, maxComments, speed, detailContext) {
   };
 }
 
+// ─── Worker Page 模式：处理单个帖子 ───
+async function processPost(workerPage, post, opts) {
+  try {
+    await applyPreGotoHumanDelay(workerPage);
+    await workerPage.goto(post.url, { waitUntil: "domcontentloaded", timeout: 15000 });
+    await navigationDelay();
 
+    const feedId = post.noteId || extractNoteId(post.url);
+    const session = await probeDetailSession(workerPage, feedId);
+    if (!session.ok) {
+      throw new Error("DetailSessionLostError: worker page session invalid");
+    }
+
+    const detailContext = {
+      mode: "fullpage",
+      rootSelector: "",
+      scrollMode: session.scrollMode,
+      scrollSelector: session.scrollSelector,
+    };
+
+    const postData = await extractComments(
+      workerPage,
+      post,
+      opts.maxComments,
+      opts.speed,
+      detailContext
+    );
+
+    return postData;
+  } catch (e) {
+    console.error(`  ❌ processPost 失败: ${e.message}`);
+    throw e;
+  }
+}
+
+// ─── Worker Page 模式：带重试的帖子处理 ───
+async function processPostWithRetry(browser, post, opts, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const workerPage = await getWorkerPage(browser);
+      const postData = await processPost(workerPage, post, opts);
+      return postData;
+    } catch (e) {
+      console.warn(`  ⚠️ 第 ${attempt}/${maxRetries} 次尝试失败: ${e.message}`);
+
+      if (attempt < maxRetries) {
+        await sleepRandom(2000, 3000);
+        await rebuildWorkerPage(browser, `重试前重建 (attempt ${attempt})`);
+      } else {
+        console.error(`  ❌ 所有重试失败，跳过帖子: ${post.url}`);
+        return null;
+      }
+    }
+  }
+  return null;
+}
 
 function sanitizeKeywordForFilename(keyword) {
   return String(keyword || 'keyword').replace(/[\\/:*?"<>|\s]+/g, '_').replace(/^_+|_+$/g, '') || 'keyword';
