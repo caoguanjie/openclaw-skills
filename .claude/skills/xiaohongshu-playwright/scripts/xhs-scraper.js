@@ -1215,19 +1215,24 @@ function appendPostResult(outputPath, keyword, postData) {
 }
 
 // ─── 评论加载状态机（对应 Python feed_detail.py: _load_all_comments） ───
-async function loadAllComments(page, maxComments, speed, detailContext) {
-  // 硬上限 500，防止极端情况
+async function loadAllComments(page, maxComments, speed, detailContext, targetNoteId) {
   const effectiveMax = maxComments > 0
     ? Math.min(maxComments, CONFIG.MAX_COMMENTS_HARD_LIMIT)
     : CONFIG.MAX_COMMENTS_HARD_LIMIT;
   const maxAttempts = effectiveMax * 3;
   const scrollInterval = getScrollInterval(speed);
+  const reprobeInterval = CONFIG.DETAIL_CONTEXT_REPROBE_INTERVAL || 15;
+  let currentContext = { ...detailContext };
 
   console.log("  📜 开始加载评论...");
-  await scrollToCommentsArea(page, detailContext);
+  await scrollToCommentsArea(page, currentContext);
   await sleepRandom(...DELAYS.HUMAN_DELAY);
 
-  const noComments = await checkNoComments(page, detailContext);
+  const noComments = await safeEval(page, "checkNoComments", (ctx) => {
+    const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
+    const el = root?.querySelector(".no-comments-text") || document.querySelector(".no-comments-text");
+    return el ? el.textContent.includes("这是一片荒地") : false;
+  }, currentContext, targetNoteId);
   if (noComments) {
     console.log("  ℹ️ 该帖子无评论");
     return { hasComments: false };
@@ -1240,19 +1245,80 @@ async function loadAllComments(page, maxComments, speed, detailContext) {
   let totalSkipped = 0;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    if (await checkEndContainer(page, detailContext)) {
-      const count = await getCommentCount(page, detailContext);
+    // 周期性重新探测 detailContext
+    if (attempt > 0 && attempt % reprobeInterval === 0) {
+      try {
+        const session = await probeDetailSession(page, targetNoteId);
+        if (!session.ok) {
+          throw new Error(`DetailSessionLostError: reprobe at attempt ${attempt}`);
+        }
+        currentContext = {
+          mode: "fullpage",
+          rootSelector: "",
+          scrollMode: session.scrollMode,
+          scrollSelector: session.scrollSelector,
+        };
+      } catch (e) {
+        if (/DetailSessionLostError/i.test(e?.message || "")) throw e;
+        // 探测失败但不是 session lost，继续用旧 context
+      }
+    }
+
+    const isEnd = await safeEval(page, "checkEndContainer", (ctx) => {
+      const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
+      const el = root?.querySelector(".end-container") || document.querySelector(".end-container");
+      if (!el) return false;
+      const text = el.textContent.trim().toUpperCase();
+      return text.includes("THE END") || text.includes("THEEND");
+    }, currentContext, targetNoteId);
+    if (isEnd) {
+      const count = await safeEval(page, "getCommentCount", (ctx) => {
+        const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
+        return root?.querySelectorAll(".parent-comment").length || 0;
+      }, currentContext, targetNoteId);
       console.log(`  ✅ 检测到 THE END，加载完成: ${count} 条评论, 点击: ${totalClicked}, 跳过: ${totalSkipped}`);
       return { hasComments: true };
     }
 
     if (attempt % CONFIG.BUTTON_CLICK_INTERVAL === 0) {
-      const { clicked, skipped } = await clickShowMoreButtons(page, detailContext);
+      const { clicked, skipped } = await safeEval(page, "clickShowMore", ({ ctx, threshold }) => {
+        const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
+        const btns = root?.querySelectorAll(".show-more") || [];
+        let clicked = 0;
+        let skipped = 0;
+        btns.forEach((btn) => {
+          const text = btn.textContent || "";
+          const match = text.match(/展开\s*(\d+)\s*条回复/);
+          if (match && parseInt(match[1], 10) > threshold) {
+            skipped++;
+            return;
+          }
+          btn.click();
+          clicked++;
+        });
+        return { clicked, skipped };
+      }, { ctx: currentContext, threshold: 50 }, targetNoteId);
       totalClicked += clicked;
       totalSkipped += skipped;
       if (clicked > 0 || skipped > 0) {
         await sleepRandom(...DELAYS.READ_TIME);
-        const r2 = await clickShowMoreButtons(page, detailContext);
+        const r2 = await safeEval(page, "clickShowMore2", ({ ctx, threshold }) => {
+          const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
+          const btns = root?.querySelectorAll(".show-more") || [];
+          let clicked = 0;
+          let skipped = 0;
+          btns.forEach((btn) => {
+            const text = btn.textContent || "";
+            const match = text.match(/展开\s*(\d+)\s*条回复/);
+            if (match && parseInt(match[1], 10) > threshold) {
+              skipped++;
+              return;
+            }
+            btn.click();
+            clicked++;
+          });
+          return { clicked, skipped };
+        }, { ctx: currentContext, threshold: 50 }, targetNoteId);
         totalClicked += r2.clicked;
         totalSkipped += r2.skipped;
         if (r2.clicked > 0 || r2.skipped > 0) {
@@ -1261,7 +1327,10 @@ async function loadAllComments(page, maxComments, speed, detailContext) {
       }
     }
 
-    const currentCount = await getCommentCount(page, detailContext);
+    const currentCount = await safeEval(page, "getCommentCount", (ctx) => {
+      const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
+      return root?.querySelectorAll(".parent-comment").length || 0;
+    }, currentContext, targetNoteId);
     if (currentCount !== lastCount) {
       if (attempt % 5 === 0 || currentCount - lastCount > 5) {
         console.log(`  📊 评论增加: ${lastCount} -> ${currentCount}`);
@@ -1278,7 +1347,14 @@ async function loadAllComments(page, maxComments, speed, detailContext) {
     }
 
     if (currentCount > 0) {
-      await scrollToLastComment(page, detailContext);
+      await safeEval(page, "scrollToLastComment", (ctx) => {
+        const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
+        const comments =
+          root?.querySelectorAll(".parent-comment") || document.querySelectorAll(".parent-comment");
+        if (comments.length > 0) {
+          comments[comments.length - 1].scrollIntoView({ behavior: "smooth", block: "end" });
+        }
+      }, currentContext, targetNoteId);
       await sleepRandom(...DELAYS.POST_SCROLL);
     }
 
@@ -1293,7 +1369,7 @@ async function loadAllComments(page, maxComments, speed, detailContext) {
       speed,
       largeMode,
       pushCount,
-      detailContext
+      currentContext
     );
 
     if (actualDelta < CONFIG.MIN_SCROLL_DELTA || currentScrollTop === lastScrollTop) {
@@ -1305,7 +1381,7 @@ async function loadAllComments(page, maxComments, speed, detailContext) {
 
     if (stagnantChecks >= CONFIG.STAGNANT_LIMIT) {
       console.log("  ⚡ 停滞过多，尝试大冲刺...");
-      await humanScroll(page, speed, true, 10, detailContext);
+      await humanScroll(page, speed, true, 10, currentContext);
       stagnantChecks = 0;
     }
 
@@ -1313,8 +1389,11 @@ async function loadAllComments(page, maxComments, speed, detailContext) {
   }
 
   console.log("  🏃 达到最大尝试次数，最后冲刺...");
-  await humanScroll(page, speed, true, CONFIG.FINAL_SPRINT_PUSH_COUNT, detailContext);
-  const count = await getCommentCount(page, detailContext);
+  await humanScroll(page, speed, true, CONFIG.FINAL_SPRINT_PUSH_COUNT, currentContext);
+  const count = await safeEval(page, "getCommentCount", (ctx) => {
+    const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
+    return root?.querySelectorAll(".parent-comment").length || 0;
+  }, currentContext, targetNoteId);
   console.log(`  📊 加载结束: ${count} 条评论, 点击: ${totalClicked}, 跳过: ${totalSkipped}`);
   return { hasComments: count > 0 };
 }
