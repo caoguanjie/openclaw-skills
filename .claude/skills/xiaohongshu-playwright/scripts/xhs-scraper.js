@@ -1429,10 +1429,18 @@ async function extractComments(page, post, maxComments, speed, detailContext) {
     console.warn("  ⚠️ 评论区加载超时");
   }
 
-  const { hasComments } = await loadAllComments(page, maxComments, speed, detailContext);
+  const { hasComments } = await loadAllComments(page, maxComments, speed, detailContext, feedId);
 
   if (!hasComments) {
-    const result = await page.evaluate(EXTRACT_DETAIL_JS);
+    const result = await safeEval(page, "extractState", () => {
+      try {
+        const state = window.__INITIAL_STATE__;
+        if (state && state.note && state.note.noteDetailMap) {
+          return JSON.stringify(state.note.noteDetailMap);
+        }
+      } catch {}
+      return "";
+    }, undefined, feedId);
     const noteDetailMap = result ? JSON.parse(result) : {};
     const { note } = parseStateComments(noteDetailMap, feedId);
     return {
@@ -1445,7 +1453,15 @@ async function extractComments(page, post, maxComments, speed, detailContext) {
   }
 
   // 从 __INITIAL_STATE__ 一次性提取全部数据
-  const stateResult = await page.evaluate(EXTRACT_DETAIL_JS);
+  const stateResult = await safeEval(page, "extractState", () => {
+    try {
+      const state = window.__INITIAL_STATE__;
+      if (state && state.note && state.note.noteDetailMap) {
+        return JSON.stringify(state.note.noteDetailMap);
+      }
+    } catch {}
+    return "";
+  }, undefined, feedId);
   if (!stateResult) {
     console.warn("  ⚠️ 未获取到 __INITIAL_STATE__ 数据");
     return { title: "", author: "", commentCount: "0", comments: [], screenshotFile: "" };
