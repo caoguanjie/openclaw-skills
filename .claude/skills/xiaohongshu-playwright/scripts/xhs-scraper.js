@@ -126,7 +126,7 @@ async function ensureBrowserInstalled() {
       e.message.includes("browserType.launch")
     ) {
       console.error("❌ Playwright 浏览器未安装");
-      console.error("   请运行: npx playwright install chromium");
+      console.error("   请运行: node scripts/bootstrap-playwright.js");
       process.exit(1);
     }
   }

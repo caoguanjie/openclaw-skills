@@ -4,14 +4,15 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "bootstrap:playwright": "node scripts/bootstrap-playwright.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "exceljs": "^4.4.0",
-    "playwright": "^1.58.2",
-    "rebrowser-patches": "^1.0.19"
+    "exceljs": "4.4.0",
+    "playwright": "1.48.0",
+    "rebrowser-patches": "1.0.19"
   }
 }

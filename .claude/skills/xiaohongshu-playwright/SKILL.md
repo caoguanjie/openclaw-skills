@@ -18,6 +18,7 @@ description: 在小红书上挖掘潜在客户和目标用户。搜索关键词�
 
 - npm 依赖安装：阿里镜像源（npmmirror）优先，失败回退官方源
 - Playwright Chromium：先尝试阿里镜像源（npmmirror）下载，失败回退官方源
+- skill 根目录通过 `.npmrc` 固定 `registry=https://registry.npmmirror.com`，重建 `node_modules` / `package-lock.json` 时默认走淘宝镜像
 - 环境未就绪前，不进入运行模式选择和正式采集
 
 ## 使用方式
@@ -118,9 +119,25 @@ AI 收到用户输入后，**立即同时发起以下两路，互不等待**：
 ```bash
 SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-cd "${SKILL_DIR}" && npm install playwright rebrowser-patches exceljs --registry=https://registry.npmmirror.com 2>/dev/null || npm install playwright rebrowser-patches exceljs
-PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright/ npx playwright install chromium 2>/dev/null || npx playwright install chromium
+cd "${SKILL_DIR}" && node scripts/bootstrap-playwright.js
 ```
+
+该脚本内部已完成：
+- `playwright@1.48.0`、`rebrowser-patches`、`exceljs` 的固定版本安装
+- npm 源优先 `npmmirror`，失败回退官方源
+- Playwright Chromium 下载优先 `npmmirror`，失败回退官方源
+- Linux、macOS、Windows 的环境变量差异收口到脚本内部处理
+
+如需**彻底重建依赖树与 lockfile**（例如 `package-lock.json` 里混入了 `registry.npmjs.org`）：
+
+```bash
+SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+rm -rf "${SKILL_DIR}/node_modules" "${SKILL_DIR}/package-lock.json"
+cd "${SKILL_DIR}" && npm install --registry=https://registry.npmmirror.com
+```
+
+重建后应检查 `package-lock.json` 中的 `resolved` 是否统一指向 `https://registry.npmmirror.com/`。
 
 执行时必须持续给用户反馈当前阶段，至少包括：
 - 正在检查 npm 依赖
@@ -501,4 +518,4 @@ rm -rf "${SKILL_DIR}/data/analysis_posts/<关键词>"
 - 单次建议不超过 10 篇帖子——超过这个量级，小红书的行为分析系统容易标记异常
 - cookie 过期时脚本会自动暂停并弹出 QR 码要求重新登录
 - 如遇滑块验证码，需用户手动处理后脚本继续执行
-- 国内网络环境下，所有安装命令默认使用阿里镜像源（npmmirror），失败时回退官方源。Playwright 浏览器下载通过 `PLAYWRIGHT_DOWNLOAD_HOST` 环境变量加速
+- 国内网络环境下，环境初始化统一通过 `node scripts/bootstrap-playwright.js` 执行。skill 根目录 `.npmrc` 默认固定淘宝镜像，脚本内部优先使用阿里镜像源（npmmirror），失败时回退官方源，并处理 Linux、macOS、Windows 的环境变量差异
