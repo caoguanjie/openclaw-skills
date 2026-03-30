@@ -22,17 +22,19 @@ function parseArgs() {
   const opts = {
     input: "", // 默认为空，读取 keyword 后自动生成
     output: "",
+    taskSpec: "",
   };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--input") opts.input = args[++i];
     else if (args[i] === "--output") opts.output = args[++i];
+    else if (args[i] === "--task-spec") opts.taskSpec = args[++i];
   }
   return opts;
 }
 
 /**
  * 根据输入文件中的 keyword 自动生成默认路径
- * 输入: data/comments_{keyword}.json → 输出: data/filtered_{keyword}.json
+ * 输入: data/comments_{keyword}.json → 输出: data/candidates_{keyword}.json
  */
 function resolveDefaultPaths(opts) {
   const dataDir = path.join(__dirname, "..", "data");
@@ -51,16 +53,70 @@ function resolveDefaultPaths(opts) {
     }
   }
   if (!opts.output) {
-    // 从输入文件名推导输出文件名: comments_医美.json → filtered_医美.json
+    // 从输入文件名推导输出文件名: comments_医美.json → candidates_医美.json
     const inputBase = path.basename(opts.input);
     const match = inputBase.match(/^comments_(.+)\.json$/);
     if (match) {
-      opts.output = path.join(dataDir, `filtered_${match[1]}.json`);
+      opts.output = path.join(dataDir, `candidates_${match[1]}.json`);
     } else {
-      opts.output = path.join(dataDir, "filtered-comments.json");
+      opts.output = path.join(dataDir, "candidates.json");
     }
   }
   return opts;
+}
+
+function normalizeText(value) {
+  return String(value || "").replace(/\s+/g, "").trim().toLowerCase();
+}
+
+function uniqueList(values) {
+  return [...new Set((values || []).filter(Boolean))];
+}
+
+function normalizeStringArray(values, label) {
+  if (!Array.isArray(values)) {
+    throw new Error(`${label} 必须为数组`);
+  }
+  return uniqueList(
+    values
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+  );
+}
+
+function loadTaskSpec(taskSpecPath, keyword) {
+  if (!taskSpecPath) {
+    throw new Error("必须传入 --task-spec，粗筛脚本只接受 task spec 驱动");
+  }
+  if (!fs.existsSync(taskSpecPath)) {
+    throw new Error(`task spec 不存在: ${taskSpecPath}`);
+  }
+
+  const spec = JSON.parse(fs.readFileSync(taskSpecPath, "utf-8"));
+  const normalized = {
+    keyword: String(spec.keyword || keyword || "").trim(),
+    post_relevance: {
+      include: normalizeStringArray(spec.post_relevance?.include || [], "post_relevance.include"),
+      exclude: normalizeStringArray(spec.post_relevance?.exclude || [], "post_relevance.exclude"),
+    },
+    comment_filter: {
+      include: normalizeStringArray(spec.comment_filter?.include || [], "comment_filter.include"),
+      exclude: normalizeStringArray(spec.comment_filter?.exclude || [], "comment_filter.exclude"),
+    },
+    semantic_focus: String(spec.semantic_focus || "").trim(),
+  };
+
+  if (!normalized.keyword) {
+    throw new Error("task spec.keyword 不能为空");
+  }
+  return normalized;
+}
+
+function findMatchedTerms(text, terms) {
+  const normalizedText = normalizeText(text);
+  return uniqueList(
+    (terms || []).filter((term) => normalizedText.includes(normalizeText(term)))
+  );
 }
 
 const AD_PATTERNS = [
@@ -98,6 +154,75 @@ function isNoiseComment(content, authorName, username) {
   return null; // 保留
 }
 
+function isRelevantPost(post, taskSpec) {
+  const title = String(post.title || "");
+  const desc = String(post.desc || "");
+  const sampleComments = (post.comments || [])
+    .slice(0, 10)
+    .map((comment) => comment.content || "")
+    .join(" ");
+  const haystack = `${title} ${desc} ${sampleComments}`;
+
+  const matchedExclude = findMatchedTerms(haystack, taskSpec.post_relevance.exclude);
+  const matchedInclude = findMatchedTerms(haystack, taskSpec.post_relevance.include);
+
+  if (matchedExclude.length > 0 && matchedInclude.length === 0) {
+    return {
+      keep: false,
+      reason: `帖子命中排除词: ${matchedExclude.join(", ")}`,
+      matchedInclude,
+      matchedExclude,
+    };
+  }
+  if (taskSpec.post_relevance.include.length === 0) {
+    return { keep: true, reason: "task spec 未配置帖子包含词", matchedInclude, matchedExclude };
+  }
+  if (matchedInclude.length === 0) {
+    return {
+      keep: false,
+      reason: "帖子未命中 task spec 的相关信号",
+      matchedInclude,
+      matchedExclude,
+    };
+  }
+  return { keep: true, reason: "帖子命中 task spec 相关信号", matchedInclude, matchedExclude };
+}
+
+function classifyCandidateComment(comment, post, taskSpec) {
+  const reason = isNoiseComment(comment.content, post.author, comment.username);
+  if (reason) {
+    return { keep: false, reason };
+  }
+
+  const text = String(comment.content || "").trim();
+  const matchedExclude = findMatchedTerms(text, taskSpec.comment_filter.exclude);
+  if (matchedExclude.length > 0) {
+    return {
+      keep: false,
+      reason: `命中排除词: ${matchedExclude.join(", ")}`,
+      matchedInclude: [],
+      matchedExclude,
+    };
+  }
+
+  const matchedInclude = findMatchedTerms(text, taskSpec.comment_filter.include);
+  if (taskSpec.comment_filter.include.length > 0 && matchedInclude.length === 0) {
+    return {
+      keep: false,
+      reason: "未命中粗筛包含词",
+      matchedInclude,
+      matchedExclude,
+    };
+  }
+
+  return {
+    keep: true,
+    reason: matchedInclude.length > 0 ? `命中粗筛词: ${matchedInclude.join(", ")}` : "保留为候选",
+    matchedInclude,
+    matchedExclude,
+  };
+}
+
 function main() {
   const opts = resolveDefaultPaths(parseArgs());
   if (!fs.existsSync(opts.input)) {
@@ -106,35 +231,82 @@ function main() {
   }
 
   const data = JSON.parse(fs.readFileSync(opts.input, "utf-8"));
-  const result = { ...data, posts: [] };
+  const taskSpec = loadTaskSpec(opts.taskSpec, data.keyword);
+  const result = {
+    ...data,
+    keyword: taskSpec.keyword,
+    taskSpecPath: path.resolve(opts.taskSpec),
+    taskSpec,
+    posts: [],
+    skippedPosts: [],
+    stats: {
+      totalPosts: 0,
+      keptPosts: 0,
+      skippedPosts: 0,
+      totalComments: 0,
+      filteredComments: 0,
+      keptComments: 0,
+      filterReasons: {},
+    },
+  };
 
   let totalComments = 0;
   let filteredOut = 0;
   const filterReasons = {};
 
   for (const post of data.posts) {
+    result.stats.totalPosts++;
+    const postDecision = isRelevantPost(post, taskSpec);
+    if (!postDecision.keep) {
+      result.stats.skippedPosts++;
+      result.skippedPosts.push({
+        title: post.title || "",
+        url: post.url || "",
+        reason: postDecision.reason,
+        matchedInclude: postDecision.matchedInclude,
+        matchedExclude: postDecision.matchedExclude,
+      });
+      continue;
+    }
+
     const kept = [];
     for (const c of post.comments) {
       totalComments++;
-      const reason = isNoiseComment(c.content, post.author, c.username);
-      if (reason) {
+      const decision = classifyCandidateComment(c, post, taskSpec);
+      if (!decision.keep) {
         filteredOut++;
-        filterReasons[reason] = (filterReasons[reason] || 0) + 1;
+        filterReasons[decision.reason] = (filterReasons[decision.reason] || 0) + 1;
       } else {
-        kept.push(c);
+        kept.push({
+          ...c,
+          matchedSignals: decision.matchedInclude,
+          candidateReason: decision.reason,
+        });
       }
     }
-    result.posts.push({ ...post, comments: kept });
+    result.posts.push({
+      ...post,
+      taskSpecSignals: postDecision.matchedInclude,
+      comments: kept,
+    });
   }
+
+  result.stats.totalComments = totalComments;
+  result.stats.filteredComments = filteredOut;
+  result.stats.keptComments = totalComments - filteredOut;
+  result.stats.keptPosts = result.posts.length;
+  result.stats.filterReasons = filterReasons;
 
   const outputDir = path.dirname(opts.output);
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
   fs.writeFileSync(opts.output, JSON.stringify(result, null, 2), "utf-8");
 
   console.log(`✅ 粗筛完成`);
+  console.log(`   Task Spec: ${path.basename(opts.taskSpec)}`);
+  console.log(`   帖子: 保留 ${result.posts.length} / ${result.stats.totalPosts}`);
   console.log(`   总评论: ${totalComments}`);
-  console.log(`   过滤: ${filteredOut} (${((filteredOut / totalComments) * 100).toFixed(1)}%)`);
-  console.log(`   保留: ${totalComments - filteredOut}`);
+  console.log(`   过滤: ${filteredOut} (${totalComments ? ((filteredOut / totalComments) * 100).toFixed(1) : "0.0"}%)`);
+  console.log(`   候选: ${totalComments - filteredOut}`);
   console.log(`   过滤原因:`);
   for (const [reason, count] of Object.entries(filterReasons).sort((a, b) => b[1] - a[1])) {
     console.log(`     ${reason}: ${count}`);

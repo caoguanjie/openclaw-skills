@@ -8,6 +8,7 @@ const CONFIG = {
   DEFAULT_MAX_ATTEMPTS: 500,
   STAGNANT_LIMIT: 20,
   MIN_SCROLL_DELTA: 10,
+  MIN_BACKTRACK_DELTA: 60,
   MAX_CLICK_PER_ROUND: 3,
   STAGNANT_CHECK_THRESHOLD: 2,
   LARGE_SCROLL_TRIGGER: 5,
@@ -25,6 +26,10 @@ const DELAYS = {
   SHORT_READ: [600, 1200],
   SCROLL_WAIT: [100, 200],
   POST_SCROLL: [300, 500],
+  BROWSE_SEARCH: [1500, 3000],
+  HOVER_CARD: [200, 500],
+  MODAL_CLOSE_WAIT: [500, 1000],
+  BACK_NAVIGATION: [1000, 2000],
   POST_GAP: [5000, 10000],       // 帖子间基础间隔 5-10s
   RATE_LIMIT_WAIT: [15000, 30000], // 遇到限流后等待 15-30s
 };
@@ -125,6 +130,44 @@ function calculateScrollDelta(viewportHeight, baseRatio) {
 }
 
 /**
+ * 是否执行一次小幅向上回拉，避免滚动轨迹过于机械。
+ * @param {"slow"|"normal"|"fast"} speed
+ * @param {boolean} largeMode
+ * @param {number} currentTop
+ * @param {number} viewportHeight
+ * @returns {boolean}
+ */
+function shouldBacktrackScroll(speed, largeMode, currentTop, viewportHeight) {
+  if (currentTop <= Math.max(viewportHeight * 0.35, CONFIG.MIN_BACKTRACK_DELTA * 2)) {
+    return false;
+  }
+
+  let chance = 0.22;
+  if (speed === "slow") chance = 0.3;
+  if (speed === "fast") chance = 0.12;
+  if (largeMode) chance *= 0.45;
+
+  return Math.random() < chance;
+}
+
+/**
+ * 计算一次小幅向上回拉距离。
+ * @param {number} viewportHeight
+ * @param {number} forwardDelta
+ * @param {number} currentTop
+ * @returns {number}
+ */
+function calculateBacktrackDelta(viewportHeight, forwardDelta, currentTop) {
+  const baseDelta = Math.min(
+    currentTop - CONFIG.MIN_BACKTRACK_DELTA,
+    forwardDelta * (0.15 + Math.random() * 0.2),
+    viewportHeight * (0.1 + Math.random() * 0.12)
+  );
+
+  return Math.max(CONFIG.MIN_BACKTRACK_DELTA, Math.round(baseDelta));
+}
+
+/**
  * 从 User-Agent 列表中随机选择。
  * @returns {string}
  */
@@ -153,6 +196,8 @@ module.exports = {
   getScrollInterval,
   getScrollRatio,
   calculateScrollDelta,
+  shouldBacktrackScroll,
+  calculateBacktrackDelta,
   randomUserAgent,
   randomInt,
 };
