@@ -15,6 +15,10 @@ const CONFIG = {
   BUTTON_CLICK_INTERVAL: 3,
   FINAL_SPRINT_PUSH_COUNT: 15,
   MAX_COMMENTS_HARD_LIMIT: 500,
+  WORKER_REBUILD_INTERVAL: 5,       // 每 5 帖主动重建 worker page
+  WORKER_MAX_CONTEXT_ERRORS: 2,     // 连续 2 次上下文销毁触发重建
+  WORKER_MAX_RATE_LIMITS: 2,        // 连续 2 次限流触发重建
+  DETAIL_CONTEXT_REPROBE_INTERVAL: 15, // 每 15 次滚动循环重新探测 detailContext
 };
 
 // ========== 延迟范围（毫秒） ==========

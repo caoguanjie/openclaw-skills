@@ -240,6 +240,49 @@ const DETAIL_SCROLL_SELECTORS = [
   '[class*="NoteScroller"]',
 ];
 
+// ─── Worker page 状态管理 ───
+let _workerPage = null;
+let _workerState = {
+  postCount: 0,
+  consecutiveContextErrors: 0,
+  consecutiveRateLimits: 0,
+  rateLimitHits: 0,
+  extraPostGap: 0,
+};
+
+function resetWorkerState() {
+  _workerState.postCount = 0;
+  _workerState.consecutiveContextErrors = 0;
+  _workerState.consecutiveRateLimits = 0;
+}
+
+async function getWorkerPage(context) {
+  if (!_workerPage || _workerPage.isClosed()) {
+    _workerPage = await context.newPage();
+    await _workerPage.addInitScript(ANTI_DETECT_SCRIPT);
+    resetWorkerState();
+    console.log("  🔧 Worker page 已创建");
+  }
+  return _workerPage;
+}
+
+async function rebuildWorkerPage(context, reason) {
+  console.log(`  🔄 重建 worker page: ${reason}`);
+  if (_workerPage && !_workerPage.isClosed()) {
+    await _workerPage.close().catch(() => null);
+  }
+  _workerPage = null;
+  return getWorkerPage(context);
+}
+
+function shouldRebuildWorker() {
+  return (
+    _workerState.postCount >= CONFIG.WORKER_REBUILD_INTERVAL ||
+    _workerState.consecutiveContextErrors >= CONFIG.WORKER_MAX_CONTEXT_ERRORS ||
+    _workerState.consecutiveRateLimits >= CONFIG.WORKER_MAX_RATE_LIMITS
+  );
+}
+
 function extractNoteId(value) {
   const text = String(value || "");
   const match = text.match(/\/([a-f0-9]{24})\b/i);
