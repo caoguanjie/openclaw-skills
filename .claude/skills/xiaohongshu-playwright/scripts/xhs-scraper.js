@@ -1696,99 +1696,46 @@ async function main() {
       console.log("ℹ️ 所有搜索结果已采集过，无需重复采集");
     }
 
-    // 4. 逐篇提取评论
+    // 4. 逐篇提取评论（使用 worker page 模式）
     const newPosts = [];
+    const REBUILD_CHECK_INTERVAL = 5;
 
     for (let i = 0; i < posts.length; i++) {
       console.log(`\n📌 [${i + 1}/${posts.length}] 处理帖子...`);
-      let postData = null;
-      let handled = false;
 
-      try {
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          let nav = { mode: "fallback" };
-          try {
-            nav = await navigateToPost(
-              page,
-              posts[i],
-              searchUrl,
-              context,
-              opts.cookiePath
-            );
-
-            if (await checkRateLimit(page)) {
-              if (attempt < 3) {
-                console.warn(`  ⚠️ 触发频率限制（300013），第 ${attempt} 次重试前等待...`);
-                await returnToSearch(page, nav.mode, searchUrl, context, opts.cookiePath);
-                await sleepRandom(...DELAYS.RATE_LIMIT_WAIT);
-                continue;
-              }
-              console.error("  ❌ 连续 3 次触发频率限制，跳过此帖");
-              await returnToSearch(page, nav.mode, searchUrl, context, opts.cookiePath);
-              handled = true;
-              break;
-            }
-
-            const detailContext = await resolveDetailContext(page, nav.mode);
-            console.log(
-              `  🧭 评论滚动上下文: ${detailContext.scrollMode}${
-                detailContext.scrollSelector ? ` (${detailContext.scrollSelector})` : ""
-              }`
-            );
-            postData = await extractComments(
-              page,
-              posts[i],
-              opts.maxComments,
-              opts.speed,
-              detailContext
-            );
-            await returnToSearch(page, nav.mode, searchUrl, context, opts.cookiePath);
-            handled = true;
-            break;
-          } catch (error) {
-            const message = error?.message || String(error);
-            const retryable = /Execution context was destroyed|Cannot find context|Target page, context or browser has been closed|Navigation failed/i.test(message);
-            console.warn(`  ⚠️ 第 ${attempt} 次处理异常: ${message}`);
-            await returnToSearch(page, nav.mode, searchUrl, context, opts.cookiePath).catch(() => null);
-            if (retryable && attempt < 3) {
-              await sleepRandom(1500, 3000);
-              continue;
-            }
-            throw error;
-          }
+      if (i > 0 && i % REBUILD_CHECK_INTERVAL === 0) {
+        if (shouldRebuildWorker()) {
+          await rebuildWorkerPage(browser, `定期检查 (每 ${REBUILD_CHECK_INTERVAL} 帖)`);
         }
-
-        if (postData) {
-          newPosts.push({
-            title: postData.title || posts[i].title,
-            url: posts[i].url,
-            noteId: posts[i].noteId || extractNoteId(posts[i].url),
-            author: postData.author || posts[i].author,
-            commentCount: postData.commentCount || "0",
-            comments: postData.comments,
-            screenshotFile: postData.screenshotFile || "",
-          });
-        }
-      } catch (e) {
-        console.error(`  ❌ 帖子处理失败: ${e.message}`);
-        await returnToSearch(
-          page,
-          "fallback",
-          searchUrl,
-          context,
-          opts.cookiePath
-        ).catch(() => null);
       }
 
-      if (!handled) {
-        console.warn("  ⚠️ 本帖未能完成处理");
+      const postData = await processPostWithRetry(browser, posts[i], opts);
+
+      if (postData) {
+        const postResult = {
+          title: postData.title || posts[i].title,
+          url: posts[i].url,
+          noteId: posts[i].noteId || extractNoteId(posts[i].url),
+          author: postData.author || posts[i].author,
+          commentCount: postData.commentCount || "0",
+          comments: postData.comments,
+          screenshotFile: postData.screenshotFile || "",
+        };
+
+        newPosts.push(postResult);
+
+        const mergedPosts = [...existingPosts, ...newPosts];
+        appendPostResult(opts.output, opts.keyword, mergedPosts);
+        console.log(`  💾 已增量保存 (累计 ${mergedPosts.length} 篇)`);
+      } else {
+        console.warn(`  ⚠️ 帖子处理失败，已跳过`);
       }
 
       if (i < posts.length - 1) {
-        await browseSearchResults(page);
-        await sleepRandom(...DELAYS.POST_GAP);
-        await navigationDelay();
-        const waitSec = Math.round((DELAYS.POST_GAP[0] + DELAYS.POST_GAP[1]) / 2000);
+        const baseGap = DELAYS.POST_GAP[0] + _workerState.extraPostGap;
+        const maxGap = DELAYS.POST_GAP[1] + _workerState.extraPostGap;
+        await sleepRandom(baseGap, maxGap);
+        const waitSec = Math.round((baseGap + maxGap) / 2000);
         console.log(`  ⏱️ 帖子间等待 ~${waitSec}s 完成`);
       }
     }
