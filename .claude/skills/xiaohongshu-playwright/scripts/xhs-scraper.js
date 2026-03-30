@@ -351,6 +351,24 @@ async function safeLocatorOp(page, label, locatorFn, targetNoteId) {
   }
 }
 
+// ─── goto 前后人类化延迟 ───
+async function applyPreGotoHumanDelay(searchPage) {
+  await sleepRandom(1500, 3500);
+
+  const moves = randomInt(1, 3);
+  for (let i = 0; i < moves; i++) {
+    const delta = randomInt(80, 260) * (Math.random() > 0.3 ? 1 : -1);
+    await searchPage.evaluate((value) => {
+      window.scrollBy({ top: value, behavior: "smooth" });
+    }, delta).catch(() => null);
+    await sleepRandom(400, 900);
+  }
+}
+
+async function applyPostGotoHumanDelay(detailPage) {
+  await sleepRandom(1200, 2600);
+}
+
 function extractNoteId(value) {
   const text = String(value || "");
   const match = text.match(/\/([a-f0-9]{24})\b/i);
