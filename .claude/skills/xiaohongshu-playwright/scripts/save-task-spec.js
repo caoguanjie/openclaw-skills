@@ -20,9 +20,6 @@ function parseArgs() {
   if (!opts.keyword) {
     throw new Error("--keyword 为必填参数");
   }
-  if (!opts.json) {
-    throw new Error("--json 为必填参数");
-  }
 
   return opts;
 }
@@ -75,9 +72,38 @@ function buildDefaultOutput(keyword) {
   return path.join(dir, `${stamp}_${sanitizeKeywordForFilename(keyword)}.json`);
 }
 
-function main() {
+function readStdin() {
+  return new Promise((resolve, reject) => {
+    // 检查是否有 stdin 输入
+    if (process.stdin.isTTY) {
+      resolve(null);
+      return;
+    }
+
+    let data = "";
+    process.stdin.setEncoding("utf-8");
+    process.stdin.on("data", (chunk) => {
+      data += chunk;
+    });
+    process.stdin.on("end", () => {
+      resolve(data.trim() || null);
+    });
+    process.stdin.on("error", reject);
+  });
+}
+
+async function main() {
   const opts = parseArgs();
-  const rawSpec = JSON.parse(opts.json);
+
+  // 优先从 stdin 读取，回退到 --json 参数
+  const stdinData = await readStdin();
+  const jsonString = stdinData || opts.json;
+
+  if (!jsonString) {
+    throw new Error("必须通过 stdin 或 --json 参数提供 JSON 数据");
+  }
+
+  const rawSpec = JSON.parse(jsonString);
   const spec = validateTaskSpec(rawSpec, opts.keyword);
   const outputPath = opts.output ? path.resolve(opts.output) : buildDefaultOutput(spec.keyword);
 
@@ -90,4 +116,7 @@ function main() {
   console.log(outputPath);
 }
 
-main();
+main().catch((err) => {
+  console.error("错误:", err.message);
+  process.exit(1);
+});
