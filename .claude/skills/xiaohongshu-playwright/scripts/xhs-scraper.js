@@ -38,6 +38,11 @@ const {
   randomInt,
 } = require("./human");
 
+// 通用工具模块
+const { extractNoteId, sanitizeKeywordForFilename, normalizeStringArray } = require("../lib/utils/string");
+const { loadJsonFile, openFile } = require("../lib/utils/file");
+const { runNodeScript } = require("../lib/utils/process");
+
 // ─── CLI 参数解析 ───
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -101,21 +106,21 @@ function parseArgs() {
   return opts;
 }
 
-// ─── 跨平台打开文件 ───
-function openFile(filePath) {
-  const { spawn } = require("child_process");
-  try {
-    if (process.platform === "win32") {
-      spawn("cmd", ["/c", "start", "", filePath], { stdio: "ignore" });
-    } else if (process.platform === "darwin") {
-      spawn("open", [filePath], { stdio: "ignore" });
-    } else {
-      spawn("xdg-open", [filePath], { stdio: "ignore" });
-    }
-  } catch {
-    // 静默失败，文件路径已打印到终端供用户手动打开
-  }
-}
+// ─── 已抽离到 lib/utils/file.js ───
+// function openFile(filePath) {
+//   const { spawn } = require("child_process");
+//   try {
+//     if (process.platform === "win32") {
+//       spawn("cmd", ["/c", "start", "", filePath], { stdio: "ignore" });
+//     } else if (process.platform === "darwin") {
+//       spawn("open", [filePath], { stdio: "ignore" });
+//     } else {
+//       spawn("xdg-open", [filePath], { stdio: "ignore" });
+//     }
+//   } catch {
+//     // 静默失败，文件路径已打印到终端供用户手动打开
+//   }
+// }
 
 // ─── Playwright 浏览器安装检查 ───
 async function ensureBrowserInstalled() {
@@ -359,11 +364,12 @@ async function applyPostGotoHumanDelay(detailPage) {
   await sleepRandom(2000, 4000);
 }
 
-function extractNoteId(value) {
-  const text = String(value || "");
-  const match = text.match(/\/([a-f0-9]{24})\b/i);
-  return match ? match[1] : "";
-}
+// ─── 已抽离到 lib/utils/string.js ───
+// function extractNoteId(value) {
+//   const text = String(value || "");
+//   const match = text.match(/\/([a-f0-9]{24})\b/i);
+//   return match ? match[1] : "";
+// }
 
 // ─── Cookie 管理 ───
 async function loadCookies(context, cookiePath) {
@@ -1315,25 +1321,28 @@ async function processPostWithRetry(context, post, opts, maxRetries = 3) {
   return null;
 }
 
-function sanitizeKeywordForFilename(keyword) {
-  return String(keyword || 'keyword').replace(/[\\/:*?"<>|\s]+/g, '_').replace(/^_+|_+$/g, '') || 'keyword';
-}
+// ─── 已抽离到 lib/utils/string.js ───
+// function sanitizeKeywordForFilename(keyword) {
+//   return String(keyword || 'keyword').replace(/[\\/:*?"<>|\s]+/g, '_').replace(/^_+|_+$/g, '') || 'keyword';
+// }
 
-function loadJsonFile(filePath, label = "JSON 文件") {
-  const text = fs.readFileSync(filePath, "utf-8");
-  try {
-    return JSON.parse(text);
-  } catch (error) {
-    throw new Error(`${label} 解析失败: ${error.message}`);
-  }
-}
+// ─── 已抽离到 lib/utils/file.js ───
+// function loadJsonFile(filePath, label = "JSON 文件") {
+//   const text = fs.readFileSync(filePath, "utf-8");
+//   try {
+//     return JSON.parse(text);
+//   } catch (error) {
+//     throw new Error(`${label} 解析失败: ${error.message}`);
+//   }
+// }
 
-function normalizeStringArray(values, label) {
-  if (!Array.isArray(values)) {
-    throw new Error(`${label} 必须为数组`);
-  }
-  return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
-}
+// ─── 已抽离到 lib/utils/string.js ───
+// function normalizeStringArray(values, label) {
+//   if (!Array.isArray(values)) {
+//     throw new Error(`${label} 必须为数组`);
+//   }
+//   return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
+// }
 
 function loadTaskSpec(taskSpecPath, keyword) {
   if (!taskSpecPath) {
@@ -1370,13 +1379,14 @@ function loadTaskSpec(taskSpecPath, keyword) {
   return { path: absolutePath, spec: normalized };
 }
 
-function runNodeScript(scriptPath, args = []) {
-  const { spawnSync } = require('child_process');
-  const result = spawnSync(process.execPath, [scriptPath, ...args], { stdio: 'inherit' });
-  if (result.status !== 0) {
-    throw new Error(`脚本执行失败: ${path.basename(scriptPath)} (exit ${result.status})`);
-  }
-}
+// ─── 已抽离到 lib/utils/process.js ───
+// function runNodeScript(scriptPath, args = []) {
+//   const { spawnSync } = require('child_process');
+//   const result = spawnSync(process.execPath, [scriptPath, ...args], { stdio: 'inherit' });
+//   if (result.status !== 0) {
+//     throw new Error(`脚本执行失败: ${path.basename(scriptPath)} (exit ${result.status})`);
+//   }
+// }
 
 function runPostPipeline(opts, result, taskSpec) {
   const skillDir = path.join(__dirname, '..');
