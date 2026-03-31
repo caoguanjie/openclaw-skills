@@ -15,7 +15,8 @@
 try {
   require("rebrowser-patches/patch");
 } catch {
-  // rebrowser-patches 未安装时静默降级
+  console.warn("⚠️  rebrowser-patches 未安装，反检测能力降低");
+  console.warn("   建议运行: node scripts/bootstrap-playwright.js");
 }
 
 const { chromium } = require("playwright");
