@@ -178,9 +178,17 @@ cd "${SKILL_DIR}" && npm install --registry=https://registry.npmmirror.com
 落盘：
 
 ```bash
+# 创建临时 JSON 文件（跨平台兼容方案）
+TEMP_JSON="${SKILL_DIR}/.temp-task-spec-$(date +%s).json"
+echo '<task-spec-json>' > "$TEMP_JSON"
+
+# 使用 --json-file 参数调用
 node "${SKILL_DIR}/scripts/save-task-spec.js" \
   --keyword "<关键词>" \
-  --json '<task-spec-json>'
+  --json-file "$TEMP_JSON"
+
+# 清理临时文件
+rm -f "$TEMP_JSON"
 ```
 
 路径：`data/task-specs/<timestamp>_<keyword>.json`

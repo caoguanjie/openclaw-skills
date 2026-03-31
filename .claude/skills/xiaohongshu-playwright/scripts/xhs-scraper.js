@@ -391,7 +391,7 @@ async function saveCookies(context, cookiePath) {
   const cookies = await context.cookies();
   const dir = path.dirname(cookiePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(cookiePath, JSON.stringify(cookies, null, 2));
+  fs.writeFileSync(cookiePath, JSON.stringify(cookies, null, 2), "utf-8");
   console.log(`已保存 ${cookies.length} 个 cookie`);
 }
 

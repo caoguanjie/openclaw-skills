@@ -8,12 +8,14 @@ function parseArgs() {
   const opts = {
     keyword: "",
     json: "",
+    jsonFile: "",
     output: "",
   };
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--keyword") opts.keyword = args[++i] || "";
     else if (args[i] === "--json") opts.json = args[++i] || "";
+    else if (args[i] === "--json-file") opts.jsonFile = args[++i] || "";
     else if (args[i] === "--output") opts.output = args[++i] || "";
   }
 
@@ -95,12 +97,19 @@ function readStdin() {
 async function main() {
   const opts = parseArgs();
 
-  // 优先从 stdin 读取，回退到 --json 参数
-  const stdinData = await readStdin();
-  const jsonString = stdinData || opts.json;
+  // 优先级：--json-file > stdin > --json
+  let jsonString;
+  if (opts.jsonFile) {
+    // 从文件读取（明确指定 UTF-8 编码）
+    jsonString = fs.readFileSync(path.resolve(opts.jsonFile), "utf-8");
+  } else {
+    // 回退到 stdin 或 --json 参数
+    const stdinData = await readStdin();
+    jsonString = stdinData || opts.json;
+  }
 
   if (!jsonString) {
-    throw new Error("必须通过 stdin 或 --json 参数提供 JSON 数据");
+    throw new Error("必须通过 --json-file、stdin 或 --json 参数提供 JSON 数据");
   }
 
   const rawSpec = JSON.parse(jsonString);
@@ -114,6 +123,15 @@ async function main() {
 
   fs.writeFileSync(outputPath, JSON.stringify(spec, null, 2), "utf-8");
   console.log(outputPath);
+
+  // 成功后删除临时文件（如果是 .temp- 开头）
+  if (opts.jsonFile && path.basename(opts.jsonFile).startsWith('.temp-')) {
+    try {
+      fs.unlinkSync(path.resolve(opts.jsonFile));
+    } catch (err) {
+      // 忽略删除失败
+    }
+  }
 }
 
 main().catch((err) => {
