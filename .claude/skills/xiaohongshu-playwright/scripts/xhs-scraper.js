@@ -53,6 +53,14 @@ const {
   safeEval,
   safeLocatorOp,
 } = require("../lib/playwright");
+// 小红书业务模块
+const {
+  loadCookies: loadCookiesFromModule,
+  saveCookies: saveCookiesFromModule,
+  loadExistingData: loadExistingDataFromModule,
+  appendPostResult: appendPostResultFromModule,
+  parseStateComments: parseStateCommentsFromModule,
+} = require("../lib/xhs");
 
 // ─── CLI 参数解析 ───
 function parseArgs() {
@@ -385,35 +393,51 @@ async function applyPostGotoHumanDelay(detailPage) {
 // }
 
 // ─── Cookie 管理 ───
+// ─── 已抽离到 lib/xhs/cookies.js ───
+// async function loadCookies(context, cookiePath) {
+//   if (fs.existsSync(cookiePath)) {
+//     try {
+//       const cookies = JSON.parse(fs.readFileSync(cookiePath, "utf-8"));
+//       if (Array.isArray(cookies) && cookies.length > 0) {
+//         const now = Date.now() / 1000;
+//         const valid = cookies.filter(
+//           (c) => !c.expires || c.expires === -1 || c.expires > now
+//         );
+//         if (valid.length > 0) {
+//           await context.addCookies(valid);
+//           console.log(`已加载 ${valid.length} 个有效 cookie（共 ${cookies.length} 个）`);
+//           return true;
+//         }
+//         console.warn("所有 cookie 已过期");
+//       }
+//     } catch (e) {
+//       console.warn("Cookie 文件解析失败:", e.message);
+//     }
+//   }
+//   return false;
+// }
+
 async function loadCookies(context, cookiePath) {
-  if (fs.existsSync(cookiePath)) {
-    try {
-      const cookies = JSON.parse(fs.readFileSync(cookiePath, "utf-8"));
-      if (Array.isArray(cookies) && cookies.length > 0) {
-        const now = Date.now() / 1000;
-        const valid = cookies.filter(
-          (c) => !c.expires || c.expires === -1 || c.expires > now
-        );
-        if (valid.length > 0) {
-          await context.addCookies(valid);
-          console.log(`已加载 ${valid.length} 个有效 cookie（共 ${cookies.length} 个）`);
-          return true;
-        }
-        console.warn("所有 cookie 已过期");
-      }
-    } catch (e) {
-      console.warn("Cookie 文件解析失败:", e.message);
-    }
+  const cookies = loadCookiesFromModule(cookiePath);
+  if (cookies) {
+    await context.addCookies(cookies);
+    console.log(`已加载 ${cookies.length} 个有效 cookie`);
+    return true;
   }
   return false;
 }
 
+// ─── 已抽离到 lib/xhs/cookies.js ───
+// async function saveCookies(context, cookiePath) {
+//   const cookies = await context.cookies();
+//   const dir = path.dirname(cookiePath);
+//   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+//   fs.writeFileSync(cookiePath, JSON.stringify(cookies, null, 2), "utf-8");
+//   console.log(`已保存 ${cookies.length} 个 cookie`);
+// }
+
 async function saveCookies(context, cookiePath) {
-  const cookies = await context.cookies();
-  const dir = path.dirname(cookiePath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(cookiePath, JSON.stringify(cookies, null, 2), "utf-8");
-  console.log(`已保存 ${cookies.length} 个 cookie`);
+  return saveCookiesFromModule(context, cookiePath);
 }
 
 // ─── 登录检测（多重判断） ───
@@ -675,63 +699,68 @@ async function searchPosts(page, keyword, maxPosts, context, cookiePath) {
   return { posts: selected, searchUrl };
 }
 
+// ─── 已抽离到 lib/xhs/parser.js ───
+// function parseStateComments(noteDetailMap, feedId) {
+//   let noteData = noteDetailMap[feedId];
+//   if (!noteData) {
+//     const keys = Object.keys(noteDetailMap);
+//     if (keys.length > 0) noteData = noteDetailMap[keys[0]];
+//   }
+//   if (!noteData) return { note: null, comments: [] };
+//
+//   const rawNote = noteData.note || {};
+//   const note = {
+//     title: rawNote.title || "",
+//     desc: rawNote.desc || "",
+//     type: rawNote.type || "",
+//     ipLocation: rawNote.ipLocation || "",
+//     author: rawNote.user?.nickname || rawNote.user?.nickName || "",
+//     authorId: rawNote.user?.userId || "",
+//     commentCount: rawNote.interactInfo?.commentCount || "0",
+//     likedCount: rawNote.interactInfo?.likedCount || "0",
+//     collectedCount: rawNote.interactInfo?.collectedCount || "0",
+//   };
+//
+//   const rawComments = noteData.comments?.list || [];
+//   const comments = [];
+//
+//   for (const c of rawComments) {
+//     const userId = c.userInfo?.userId || "";
+//     comments.push({
+//       id: c.id || "",
+//       username: c.userInfo?.nickname || c.userInfo?.nickName || "",
+//       userId,
+//       avatar: c.userInfo?.avatar || "",
+//       content: c.content || "",
+//       likes: c.likeCount || "0",
+//       createTime: c.createTime || 0,
+//       ipLocation: c.ipLocation || "",
+//       profileUrl: userId
+//         ? `https://www.xiaohongshu.com/user/profile/${userId}`
+//         : "",
+//       subCommentCount: c.subCommentCount || "0",
+//       subComments: (c.subComments || []).map((sub) => {
+//         const subUserId = sub.userInfo?.userId || "";
+//         return {
+//           id: sub.id || "",
+//           username: sub.userInfo?.nickname || sub.userInfo?.nickName || "",
+//           userId: subUserId,
+//           content: sub.content || "",
+//           likes: sub.likeCount || "0",
+//           ipLocation: sub.ipLocation || "",
+//           profileUrl: subUserId
+//             ? `https://www.xiaohongshu.com/user/profile/${subUserId}`
+//             : "",
+//         };
+//       }),
+//     });
+//   }
+//
+//   return { note, comments };
+// }
+
 function parseStateComments(noteDetailMap, feedId) {
-  let noteData = noteDetailMap[feedId];
-  if (!noteData) {
-    const keys = Object.keys(noteDetailMap);
-    if (keys.length > 0) noteData = noteDetailMap[keys[0]];
-  }
-  if (!noteData) return { note: null, comments: [] };
-
-  const rawNote = noteData.note || {};
-  const note = {
-    title: rawNote.title || "",
-    desc: rawNote.desc || "",
-    type: rawNote.type || "",
-    ipLocation: rawNote.ipLocation || "",
-    author: rawNote.user?.nickname || rawNote.user?.nickName || "",
-    authorId: rawNote.user?.userId || "",
-    commentCount: rawNote.interactInfo?.commentCount || "0",
-    likedCount: rawNote.interactInfo?.likedCount || "0",
-    collectedCount: rawNote.interactInfo?.collectedCount || "0",
-  };
-
-  const rawComments = noteData.comments?.list || [];
-  const comments = [];
-
-  for (const c of rawComments) {
-    const userId = c.userInfo?.userId || "";
-    comments.push({
-      id: c.id || "",
-      username: c.userInfo?.nickname || c.userInfo?.nickName || "",
-      userId,
-      avatar: c.userInfo?.avatar || "",
-      content: c.content || "",
-      likes: c.likeCount || "0",
-      createTime: c.createTime || 0,
-      ipLocation: c.ipLocation || "",
-      profileUrl: userId
-        ? `https://www.xiaohongshu.com/user/profile/${userId}`
-        : "",
-      subCommentCount: c.subCommentCount || "0",
-      subComments: (c.subComments || []).map((sub) => {
-        const subUserId = sub.userInfo?.userId || "";
-        return {
-          id: sub.id || "",
-          username: sub.userInfo?.nickname || sub.userInfo?.nickName || "",
-          userId: subUserId,
-          content: sub.content || "",
-          likes: sub.likeCount || "0",
-          ipLocation: sub.ipLocation || "",
-          profileUrl: subUserId
-            ? `https://www.xiaohongshu.com/user/profile/${subUserId}`
-            : "",
-        };
-      }),
-    });
-  }
-
-  return { note, comments };
+  return parseStateCommentsFromModule(noteDetailMap, feedId);
 }
 
 // ─── 已抽离到 lib/playwright/scroll.js ───
@@ -891,52 +920,60 @@ function parseStateComments(noteDetailMap, feedId) {
 // }
 
 
-// ─── 加载已有采集数据（帖子级去重） ───
+// ─── 已抽离到 lib/xhs/data-persistence.js ───
+// function loadExistingData(outputPath, keyword) {
+//   if (!fs.existsSync(outputPath)) {
+//     return { existingPosts: [], collectedUrls: new Set() };
+//   }
+//   try {
+//     const data = JSON.parse(fs.readFileSync(outputPath, "utf-8"));
+//     // 只匹配同关键词的数据
+//     if (data.keyword !== keyword) {
+//       console.log(`📂 已有数据关键词不匹配（"${data.keyword}" vs "${keyword}"），不去重`);
+//       return { existingPosts: [], collectedUrls: new Set() };
+//     }
+//     const existingPosts = data.posts || [];
+//     const collectedUrls = new Set(existingPosts.map((p) => p.url));
+//     console.log(`📂 已有 ${existingPosts.length} 篇帖子数据，将跳过已采集帖子`);
+//     return { existingPosts, collectedUrls };
+//   } catch (e) {
+//     console.warn("读取已有数据失败:", e.message);
+//     return { existingPosts: [], collectedUrls: new Set() };
+//   }
+// }
+
 function loadExistingData(outputPath, keyword) {
-  if (!fs.existsSync(outputPath)) {
-    return { existingPosts: [], collectedUrls: new Set() };
-  }
-  try {
-    const data = JSON.parse(fs.readFileSync(outputPath, "utf-8"));
-    // 只匹配同关键词的数据
-    if (data.keyword !== keyword) {
-      console.log(`📂 已有数据关键词不匹配（"${data.keyword}" vs "${keyword}"），不去重`);
-      return { existingPosts: [], collectedUrls: new Set() };
-    }
-    const existingPosts = data.posts || [];
-    const collectedUrls = new Set(existingPosts.map((p) => p.url));
-    console.log(`📂 已有 ${existingPosts.length} 篇帖子数据，将跳过已采集帖子`);
-    return { existingPosts, collectedUrls };
-  } catch (e) {
-    console.warn("读取已有数据失败:", e.message);
-    return { existingPosts: [], collectedUrls: new Set() };
-  }
+  return loadExistingDataFromModule(outputPath, keyword);
 }
 
-// ─── 增量保存（每帖采完立即写盘，noteId 去重） ───
+// ─── 已抽离到 lib/xhs/data-persistence.js ───
+// function appendPostResult(outputPath, keyword, postData) {
+//   let existing = { keyword, scrapeTime: new Date().toISOString(), posts: [] };
+//   if (fs.existsSync(outputPath)) {
+//     try {
+//       existing = JSON.parse(fs.readFileSync(outputPath, "utf-8"));
+//     } catch {
+//       // 文件损坏时从空开始
+//     }
+//   }
+//
+//   const noteId = postData.noteId;
+//   const existingIds = new Set(existing.posts.map((p) => p.noteId));
+//   if (existingIds.has(noteId)) {
+//     return false; // 已存在，跳过
+//   }
+//
+//   existing.posts.push(postData);
+//   existing.scrapeTime = new Date().toISOString();
+//
+//   const dir = path.dirname(outputPath);
+//   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+//   fs.writeFileSync(outputPath, JSON.stringify(existing, null, 2), "utf-8");
+//   return true;
+// }
+
 function appendPostResult(outputPath, keyword, postData) {
-  let existing = { keyword, scrapeTime: new Date().toISOString(), posts: [] };
-  if (fs.existsSync(outputPath)) {
-    try {
-      existing = JSON.parse(fs.readFileSync(outputPath, "utf-8"));
-    } catch {
-      // 文件损坏时从空开始
-    }
-  }
-
-  const noteId = postData.noteId;
-  const existingIds = new Set(existing.posts.map((p) => p.noteId));
-  if (existingIds.has(noteId)) {
-    return false; // 已存在，跳过
-  }
-
-  existing.posts.push(postData);
-  existing.scrapeTime = new Date().toISOString();
-
-  const dir = path.dirname(outputPath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(outputPath, JSON.stringify(existing, null, 2), "utf-8");
-  return true;
+  return appendPostResultFromModule(outputPath, keyword, postData);
 }
 
 // ─── 评论加载状态机（对应 Python feed_detail.py: _load_all_comments） ───
