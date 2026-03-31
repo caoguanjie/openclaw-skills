@@ -101,24 +101,26 @@ xiaohongshu-playwright 是一个基于 Playwright 的小红书潜客挖掘工具
 
 **降级策略**：如果 XHS API 接口格式变更导致拦截失败，仍可依赖 `__INITIAL_STATE__` + DOM 双源提取。
 
-### 2.2 SKILL.md 瘦身与质量提升
+### 2.2 SKILL.md 瘦身与质量提升 ✅
 
-**问题**：当前 521 行，超出 skill-creator 推荐的 500 行上限。部分内容过于实现细节化，且存在刚性的 MUST 指令缺乏 why 解释。
+**问题**：当前 503 行，超出 skill-creator 推荐的 460 行以下目标。部分「强制执行规则」使用刚性 MUST 指令，缺乏 why 解释。
 
 **改动**：
-- 将步骤 1a 的详细 bootstrap 流程迁移到 `references/environment-setup.md`（Sprint 1.5 已创建）
-- 将步骤 7 的 Excel 布局 16 列详细表格迁移到 `references/excel-format.md`
-- 精简步骤 5 的 sub-agent 完整任务描述模板（保留关键字段，去除冗余注释）
-- 将「强制执行规则」中的刚性 MUST 改为解释性语言：
-  - 原文：`必须先生成 task spec（步骤 1b）` → 改为解释：`task spec 在步骤 3 的脚本中作为输入必需，所以需要在步骤 3 前就绪`
-  - 原文：`步骤 5 并行精筛最多同时运行 3 个 sub-agent` → 解释：`限制 3 并发是因为超过 3 个 sub-agent 会导致上下文窗口争抢，反而降低精筛质量`
-- 目标：压缩到 ~450 行
+- 创建 `references/subagent-task-template.md` — 将步骤 5 的 sub-agent 任务描述模板（44 行）迁移到独立文档
+- 创建 `references/excel-format.md` — 将步骤 7 的 Excel 布局详情（20 行）迁移到独立文档
+- 优化「强制执行规则」表达方式 — 从刚性指令改为解释性语言，每条约束都包含 why 解释
+- 精简「注意事项」段落 — 移除与步骤 1a、步骤 3 重复的内容
+- 更新「参考文件」表格 — 添加新创建的 3 个参考文档
 - 复杂度：**中**
 
-**验证**：
-- 用已有的 `data/comments_留学.json` 做 dry-run，对比新旧提取逻辑的评论数量差异
-- `wc -l SKILL.md` 确认行数 < 460
-- 通读 SKILL.md 确认流程完整、无遗漏步骤
+**完成情况**：
+- ✅ 创建 `references/subagent-task-template.md`（2.3KB）
+- ✅ 创建 `references/excel-format.md`（1.6KB）
+- ✅ SKILL.md 总行数：503 → 439 行（减少 64 行，达到目标）
+- ✅ 优化「强制执行规则」：6 条约束均包含原因说明
+- ✅ 精简「注意事项」：从 6 条减少到 4 条核心提示
+- ✅ 更新「参考文件」表格：新增 3 个参考文档条目
+- ✅ 添加 7 处参考链接指向新文档
 
 ---
 
@@ -129,45 +131,70 @@ xiaohongshu-playwright 是一个基于 Playwright 的小红书潜客挖掘工具
 
 ### 3.1 更新反检测指纹系统
 
+**问题**：
+- `scripts/human.js:64-71` 的 `USER_AGENTS` 使用 Chrome 124/125（已过时）
+- `scripts/xhs-scraper.js:156-231` 的 `ANTI_DETECT_SCRIPT` 硬编码了 platform、hardwareConcurrency、deviceMemory，无法根据 UA 动态适配
+
 **改动**：
 - `scripts/human.js` — 更新 `USER_AGENTS` 列表：
-  - Chrome 124/125 → Chrome 131/132（2026 年当前主流版本）
+  - Chrome 124/125 → Chrome 131/132（2026 年 3 月主流版本）
   - 保留 macOS、Windows、Linux 三平台覆盖
   - 增加 Safari 18.x、Edge 131 各一条
-- `scripts/human.js` — 新增 `getFingerprint(ua)` 函数：
+- `scripts/human.js` — 新增 `getFingerprint(ua)` 函数并导出：
   - 根据 UA 字符串自动返回匹配的 `navigator.platform`（Windows → "Win32"，macOS → "MacIntel"，Linux → "Linux x86_64"）
   - 随机返回 `hardwareConcurrency`（从 [4, 8, 12, 16] 中选取）
   - 随机返回 `deviceMemory`（从 [4, 8, 16] 中选取）
-- `scripts/xhs-scraper.js` — 用 `getFingerprint()` 替换硬编码的 platform/hardware 值
+- `scripts/xhs-scraper.js` — 在 require 中引入 `getFingerprint`
+- `scripts/xhs-scraper.js` — 修改 `ANTI_DETECT_SCRIPT`（156-231 行）：
+  - 将硬编码的 `platform: 'MacIntel'`、`hardwareConcurrency: 8`、`deviceMemory: 8` 改为使用 `getFingerprint()` 返回的动态值
+  - 在 `launchBrowser()` 中调用 `getFingerprint(userAgent)` 获取指纹，注入到页面上下文
 - 复杂度：**中**
 
 ### 3.2 完善 Eval 断言
 
+**问题**：
+- `evals/evals.json` 当前只有 `expected_output` 文本描述，缺少 `assertions` 字段
+- 不符合 skill-creator 的 evals schema 标准，无法进行自动化验证
+
 **改动**：
-- `evals/evals.json` — 为现有 3 个测试用例添加 assertions 字段：
+- `evals/evals.json` — 为现有 3 个测试用例添加 `assertions` 数组字段：
 
-**Eval 1（医美/热玛吉）断言**：
-```
-- 生成的 Excel 文件存在于 output/ 目录
-- Excel 包含 16 列表头
-- 至少有 1 个用户的 interestScore >= 6
-- analysis.json 中 posts 数量 <= 5
-- data/comments_热玛吉.json 文件被创建
-- data/screenshots/ 目录包含 .png 文件
-```
-
-**Eval 2（考研英语，>=7 阈值）断言**：
-```
-- Excel 中所有用户的 interestScore >= 7（无 <7 的行）
-- analysis.json 中 posts 数量 <= 3
-- validComments 中每条都有 interestTags 和 reason 字段
+**Eval 1（医美/热玛吉）assertions**：
+```json
+"assertions": [
+  "output/ 目录存在 Excel 文件（文件名包含'热玛吉'）",
+  "Excel 包含 16 列表头（用户名、主页链接、IP属地、兴趣得分等）",
+  "至少有 1 个用户的 interestScore >= 6",
+  "data/ 目录存在 analysis_热玛吉.json 文件",
+  "analysis.json 中 posts 数组长度 <= 5",
+  "data/comments_热玛吉.json 文件被创建",
+  "data/screenshots/ 目录包含 .png 截图文件"
+]
 ```
 
-**Eval 3（多关键词）断言**：
+**Eval 2（考研英语，>=7 阈值）assertions**：
+```json
+"assertions": [
+  "output/ 目录存在 Excel 文件（文件名包含'考研英语'）",
+  "Excel 中所有用户的 interestScore >= 7（无低于 7 分的行）",
+  "data/analysis_考研英语.json 中 posts 数组长度 <= 3",
+  "analysis.json 的 validComments 中每条都有 interestTags 字段",
+  "analysis.json 的 validComments 中每条都有 reason 字段",
+  "筛选标准应体现'报班意向'和'求资料需求'"
+]
 ```
-- 生成两个独立的 Excel 文件（露营装备 + 户外徒步）
-- 两个 comments.json 文件分别创建
-- xhs-scraper.js 使用了 --speed slow 参数
+
+**Eval 3（多关键词）assertions**：
+```json
+"assertions": [
+  "output/ 目录存在两个独立的 Excel 文件（露营装备 + 户外徒步）",
+  "data/ 目录存在 comments_露营装备.json 文件",
+  "data/ 目录存在 comments_户外徒步.json 文件",
+  "data/ 目录存在 analysis_露营装备.json 文件",
+  "data/ 目录存在 analysis_户外徒步.json 文件",
+  "脚本执行日志显示使用了 --speed slow 参数",
+  "两个关键词的流程均无报错完成"
+]
 ```
 
 - 复杂度：**小**

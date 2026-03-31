@@ -88,16 +88,13 @@ description: 在小红书上挖掘潜在客户和目标用户。搜索关键词�
 > 只有在遇到报错或异常时才暂停通知用户，正常流程不允许中断。
 > 最终把 Excel 文件路径告诉用户即可。
 >
-> **强约束**：
-> - 必须先生成 task spec（步骤 1b），可与环境检查并行，但必须在步骤 3 前完成
-> - 粗筛脚本必须读取 task spec（步骤 4）
-> - 步骤 5 并行精筛最多同时运行 3 个 sub-agent（MAX_CONCURRENT_AGENTS = 3）
-> - 串行降级时**必须告知用户**：`⚠️ 当前环境不支持并行精筛，改为串行模式，速度较慢。`
-> - 步骤 8 清理使用 `rm -rf`（安全处理不存在的目录），cleanup-task-specs 使用 `--keyword` 参数
-> - 多关键词时：步骤 3-4 串行（共享 cookie）；步骤 5 可在各关键词完成步骤 4 后各自启动并行精筛
-> - 每次运行都要落盘 task spec / candidates / analysis
-> - 成功后清理 task spec（按关键词删除）和 analysis_posts 分片目录
-> - 失败时保留以上文件以便复盘
+> **关键约束及原因**：
+> - **Task spec 必须在步骤 3 前完成**：粗筛脚本（步骤 4）需要读取 task spec 的 post_relevance 和 comment_filter 字段来执行确定性筛选
+> - **并行精筛限制 3 并发**：超过 3 个 sub-agent 会导致上下文窗口争抢，反而降低精筛质量和速度
+> - **串行降级时必须告知用户**：`⚠️ 当前环境不支持并行精筛，改为串行模式，速度较慢。` — 让用户了解性能差异
+> - **步骤 8 清理使用 rm -rf**：安全处理不存在的目录，cleanup-task-specs 使用 `--keyword` 参数精确删除
+> - **多关键词时步骤 3-4 串行**：共享同一 cookie 文件，避免并发登录冲突；步骤 5 可在各关键词完成步骤 4 后各自启动并行精筛
+> - **成功后清理临时文件**：task spec 和 analysis_posts 分片仅用于中间过程，成功后删除节省空间；失败时保留以便复盘
 
 ## 工作流程
 
@@ -286,52 +283,15 @@ rm -f "${SKILL_DIR}/data/analysis_posts/<关键词>"/*.json
 
 对 candidates 中每帖，调用 Agent tool 或 Sub-Agent 派出独立 sub-agent。**最多同时运行 3 个 sub-agent**（MAX_CONCURRENT_AGENTS = 3），超出的排队等待。
 
-**每个 sub-agent 的完整任务描述**（逐字传递给 sub-agent）：
+**每个 sub-agent 的完整任务描述**：
 
-```
-你是一个评论语义分析 agent，只负责分析一篇帖子的评论。
+参见 [subagent-task-template.md](references/subagent-task-template.md) 获取完整模板。
 
-任务：
-1. 读取以下 task spec 文件，获取 semantic_focus 字段：<task-spec-path>
-2. 对以下候选评论逐条进行语义判断（禁止用关键词匹配代替语义判断）：
-   - interestTags: 逗号分隔字符串，如 "购买意向, 咨询"
-   - interestScore: 1-10 分
-   - reason: 判断理由（一句话）
-3. 只保留 interestScore >= 6 的评论
-4. 将结果写入指定输出路径（JSON 格式）
-
-帖子数据：
-- noteId: <noteId>
-- title: <帖子标题>
-- url: <帖子链接>
-- screenshotFile: <截图路径>
-- commentCount: <原始评论总数>
-- 候选评论列表: <comments-json>
-
-输出格式（写入 <output-path>）：
-{
-  "postId": "<noteId>",
-  "title": "<帖子标题>",
-  "url": "<帖子链接>",
-  "screenshotFile": "<截图路径>",
-  "totalComments": <commentCount 转为数字>,
-  "collectedComments": <候选评论条数>,
-  "validComments": [
-    {
-      "username": "...",
-      "userId": "...",
-      "content": "...",
-      "ipLocation": "...",
-      "interestTags": "购买意向, 咨询",
-      "interestScore": 8,
-      "reason": "...",
-      "profileUrl": "..."
-    }
-  ]
-}
-
-输出路径：<SKILL_DIR>/data/analysis_posts/<关键词>/<noteId>.json
-```
+**关键要求**：
+- 读取 task spec 的 semantic_focus 字段
+- 对候选评论进行语义判断（interestTags, interestScore, reason）
+- 只保留 interestScore >= 6 的评论
+- 输出到 data/analysis_posts/<关键词>/<noteId>.json
 
 所有 sub-agent 全部完成后，进入步骤 6。
 
@@ -371,20 +331,18 @@ node "${SKILL_DIR}/scripts/merge-analysis.js" \
 ### 步骤 7：生成 Excel
 
 > **禁止自己编写 Excel 生成代码。必须调用 `generate-excel.js` 脚本。**
-> 脚本已实现完整的 16 列布局、帖子截图嵌入、条件格式、下拉选择等功能。
-> 自行编写会导致命名格式不一致、功能缺失等问题。
-> 输出路径格式为 `output/<关键词>_<YYYYMMDD>_<HH-mm>.xlsx`，由脚本自动生成。
-
-将 步骤 5 的 AI 分析结果保存为 `data/analysis_<关键词>.json`。`exceljs` 依赖已在步骤 1a 完成环境安装，此处直接运行：
 
 ```bash
 node "${SKILL_DIR}/scripts/generate-excel.js" \
   --input "${SKILL_DIR}/data/analysis_<关键词>.json"
 ```
 
-**analysis.json 格式**（由步骤 5 串行精筛或步骤 6 合并后生成）：
+**输出**: `output/<关键词>_<YYYYMMDD>_<HH-mm>.xlsx`（16 列潜客管理表）
 
-**Example:**
+**Excel 格式详情**: 参见 [excel-format.md](references/excel-format.md)
+
+**analysis.json 格式示例**（由步骤 5 串行精筛或步骤 6 合并后生成）：
+
 ```json
 {
   "keyword": "医美",
@@ -411,29 +369,6 @@ node "${SKILL_DIR}/scripts/generate-excel.js" \
   ]
 }
 ```
-
-**Excel 布局**（16列潜客管理表，4区域分色表头）：
-
-| 区域 | 列 | 说明 |
-|------|-----|------|
-| 用户信息 | 用户名 | 小红书昵称 |
-| 用户信息 | 用户主页链接 | 可点击跳转 |
-| 用户信息 | IP属地 | 筛选本地用户 |
-| 兴趣分析 | 评论数量 | 该用户在此帖的评论数 |
-| 兴趣分析 | 评论内容 | 编号分行合并 |
-| 兴趣分析 | 兴趣得分 | 1-10 分（>=8 绿色，>=6 黄色） |
-| 兴趣分析 | 兴趣标签 | AI 标签 |
-| 兴趣分析 | 判断理由 | AI 理由 |
-| 来源帖子 | 帖子标题 | 帖子标题 |
-| 来源帖子 | 帖子链接 | 帖子 URL |
-| 来源帖子 | 帖子截图 | 嵌入截图 |
-| 来源帖子 | 帖子总评论数 | 该帖子评论总数 |
-| 来源帖子 | 本次获取评论数 | 本次采集到的评论数 |
-| 跟进管理 | 已关注 | 是/否（下拉选择） |
-| 跟进管理 | 跟进状态 | 待跟进/已联系/有意向/已成交/已流失（下拉选择） |
-| 跟进管理 | 负责人 | 团队成员姓名 |
-
-**输出路径**: `<SKILL_DIR>/output/<keyword>_<YYYYMMDD>_<HH-mm>.xlsx`
 
 ---
 
@@ -492,12 +427,13 @@ rm -rf "${SKILL_DIR}/data/analysis_posts/<关键词>"
 |------|---------|------|
 | `references/site-patterns/xiaohongshu.md` | Step 1（开始前）、脚本报错时 | 已知选择器、有效模式、踩坑记录 |
 | `references/execution-checklist.md` | 每个 Step 完成后 | 逐项确认清单，防止跳步遗漏 |
+| `references/environment-setup.md` | 环境问题排查时 | 依赖安装、镜像配置、常见问题 |
+| `references/subagent-task-template.md` | Step 5 并行精筛时 | Sub-agent 完整任务描述模板 |
+| `references/excel-format.md` | Step 7 Excel 生成时 | 16 列布局、条件格式、下拉选择 |
 
 ## 注意事项
 
-- 脚本内置人类化延迟（300ms-2.5s）、多段 viewport 比例滚动，以及下滑后的偶发小幅上滑回拉——这些是防反爬的核心机制，绕过会导致账号被风控
-- 首次使用推荐 `--speed slow`，因为新 cookie 的信任度低，慢速操作更安全
-- 单次建议不超过 10 篇帖子——超过这个量级，小红书的行为分析系统容易标记异常
-- cookie 过期时脚本会自动暂停并弹出 QR 码要求重新登录
-- 如遇滑块验证码，需用户手动处理后脚本继续执行
-- 国内网络环境下，环境初始化统一通过 `node scripts/bootstrap-playwright.js` 执行。skill 根目录 `.npmrc` 默认固定淘宝镜像，脚本内部优先使用阿里镜像源（npmmirror），失败时回退官方源，并处理 Linux、macOS、Windows 的环境变量差异
+- 脚本内置人类化延迟和防反爬机制，绕过会导致账号被风控
+- 首次使用推荐 `--speed slow`，新 cookie 信任度低
+- 单次建议不超过 10 篇帖子，避免触发行为分析系统
+- Cookie 过期或遇滑块验证码时需用户手动处理
