@@ -101,3 +101,61 @@ Windows PowerShell 的 `echo` 命令默认使用系统编码（GBK），而非 U
 **相关文件**：
 - `.claude/skills/xiaohongshu-playwright/scripts/xhs-scraper.js`
 - `.claude/skills/xiaohongshu-playwright/scripts/human.js`
+
+---
+
+## rebrowser-patches 缺失无警告
+
+**日期**: 2026-03-31  
+**模块**: `xiaohongshu-playwright/xhs-scraper`  
+**状态**: ✅ 已修复
+
+### 问题描述
+
+`xhs-scraper.js` 在启动时尝试加载 `rebrowser-patches` 反检测补丁，但当该依赖未安装时，catch 块静默跳过，用户无法感知反检测能力已降级。
+
+这会导致在小红书等反爬虫严格的平台上，脚本更容易被检测和封禁，但用户不知道问题所在。
+
+### 解决方案
+
+在 catch 块中添加明确的警告信息，提示用户安装缺失的依赖。
+
+**修改内容**：
+```javascript
+try {
+  require("rebrowser-patches/patch");
+} catch {
+  console.warn("⚠️  rebrowser-patches 未安装，反检测能力降低");
+  console.warn("   建议运行: node scripts/bootstrap-playwright.js");
+}
+```
+
+**相关文件**：
+- `.claude/skills/xiaohongshu-playwright/scripts/xhs-scraper.js`
+
+---
+
+## 提取共享工具模块重构
+
+**日期**: 2026-03-31  
+**模块**: `xiaohongshu-playwright`  
+**状态**: ✅ 已完成
+
+### 问题描述
+
+`xhs-scraper.js` 文件有 1564 行代码，包含大量通用工具函数和业务逻辑混杂，导致代码难以维护、复用性差、测试困难。
+
+### 解决方案
+
+采用 5 阶段渐进式重构，将通用工具函数抽离到 lib/ 目录的独立模块。
+
+**修改内容**：
+- 创建 lib/utils（string, file, process）
+- 创建 lib/playwright（delay, scroll, session, context-recovery）
+- 创建 lib/xhs（cookies, data-persistence, parser）
+- xhs-scraper.js: 1564行 → 1210行（减少22%）
+- 新增 lib 模块: 573行
+
+**相关文件**：
+- `.claude/skills/xiaohongshu-playwright/scripts/xhs-scraper.js`
+- `.claude/skills/xiaohongshu-playwright/lib/**/*`
