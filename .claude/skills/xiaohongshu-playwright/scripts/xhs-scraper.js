@@ -25,6 +25,7 @@ const {
   CONFIG,
   DELAYS,
   RATE_LIMIT_KEYWORDS,
+  INACCESSIBLE_KEYWORDS,
   sleepRandom,
   navigationDelay,
   getScrollInterval,
@@ -1234,6 +1235,15 @@ async function processPost(workerPage, post, opts) {
 
   if (await checkRateLimit(workerPage)) {
     throw new Error("300013: 触发频率限制");
+  }
+
+  // 检测页面是否不可访问（已删除/私密/违规）
+  const pageText = await workerPage.textContent("body").catch(() => "");
+  for (const keyword of INACCESSIBLE_KEYWORDS) {
+    if (pageText.includes(keyword)) {
+      console.log(`  ⚠️ 帖子不可访问: ${keyword}`);
+      return null;
+    }
   }
 
   const feedId = post.noteId || extractNoteId(post.url);

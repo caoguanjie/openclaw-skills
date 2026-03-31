@@ -74,3 +74,30 @@ Windows PowerShell 的 `echo` 命令默认使用系统编码（GBK），而非 U
 - `.claude/skills/xiaohongshu-playwright/SKILL.md`
 - `.claude/skills/xiaohongshu-playwright/scripts/xhs-scraper.js`
 - `.gitignore`
+
+---
+
+## INACCESSIBLE_KEYWORDS 未启用检测
+
+**日期**: 2026-03-31  
+**模块**: `xiaohongshu-playwright/xhs-scraper`  
+**状态**: ✅ 已修复
+
+### 问题描述
+
+`human.js` 文件中定义并导出了 `INACCESSIBLE_KEYWORDS` 数组（包含"当前笔记暂时无法浏览"、"该笔记已被删除"等关键词），但 `xhs-scraper.js` 在 require 解构中未引入该变量。
+
+导致访问已删除/私密帖子时，脚本会一直滚动到超时才放弃，浪费大量时间。
+
+### 解决方案
+
+在 `xhs-scraper.js` 中启用 `INACCESSIBLE_KEYWORDS` 检测，在访问帖子后立即检测页面是否包含不可访问关键词。
+
+**修改内容**：
+1. 在 `xhs-scraper.js` 的 require 语句中添加 `INACCESSIBLE_KEYWORDS` 导入
+2. 在 `processPost()` 函数中，goto 完成后、开始滚动前检测页面文本
+3. 检测到不可访问关键词后打印警告并返回 null，跳过该帖子
+
+**相关文件**：
+- `.claude/skills/xiaohongshu-playwright/scripts/xhs-scraper.js`
+- `.claude/skills/xiaohongshu-playwright/scripts/human.js`
