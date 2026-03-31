@@ -53,7 +53,7 @@ xiaohongshu-playwright 是一个基于 Playwright 的小红书潜客挖掘工具
 - 更新所有引用脚本的 require 语句
 - 复杂度：**中**
 
-### 1.5 创建环境设置参考文档
+### 1.5 创建环境设置参考文档 ✅
 
 **目的**：为 Sprint 2 的 SKILL.md 瘦身做准备，将 bootstrap 流程和环境检查细节提前迁移。
 
@@ -61,6 +61,13 @@ xiaohongshu-playwright 是一个基于 Playwright 的小红书潜客挖掘工具
 - 新建 `references/environment-setup.md` — 从 SKILL.md 步骤 1a 的详细安装流程、镜像回退逻辑、package-lock 重建步骤迁移过来
 - SKILL.md 步骤 1a 改为简短描述 + 指向此参考文件
 - 复杂度：**小**
+
+**完成情况**：
+- ✅ 创建 `references/environment-setup.md`（4.6KB，包含 6 个章节）
+- ✅ 精简 SKILL.md 步骤 1a（从 44 行减少到 18 行）
+- ✅ 精简 SKILL.md 依赖部分（从 9 行减少到 3 行）
+- ✅ SKILL.md 总行数：530 → 503 行（减少 27 行）
+- ✅ 两处添加参考链接指向新文档
 
 **验证**：
 - `node -c scripts/xhs-scraper.js` 语法检查通过

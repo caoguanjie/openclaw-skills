@@ -1,6 +1,6 @@
 # xiaohongshu-playwright 测试计划
 
-> 版本：2026-03-30  
+> 版本：2026-03-31  
 > 适用对象：`/Users/fits-vue/Documents/openclaw/.claude/skills/xiaohongshu-playwright`  
 > 目标：为 `xiaohongshu-playwright` skill 提供一份可直接用于自动化执行、回归验证和缺陷定位的完整测试文档。
 
@@ -127,6 +127,16 @@
 - 真实站点 E2E 用例应单独分组，避免阻塞基础回归
 - 所有以关键词为文件名的一律使用独立测试关键词，防止互相污染
 
+真实站点人工步骤约定：
+
+- `references/site-patterns/xiaohongshu.md` 在首次使用时允许不存在；缺失应视为“无历史经验”而不是步骤 1 的失败
+- 真实站点 E2E 中，登录、扫码、搜索页二次登录均属于“人工协助步骤”，不应在脚本仍处于等待窗口内时被判定为阻塞
+- 当 `xhs-scraper.js` 输出 `请扫码登录`、`请在浏览器窗口中完成登录`、`搜索页检测到登录弹窗` 等提示时，测试执行方必须允许脚本自然等待到其内置超时结束
+- 当前实现中，首次登录等待窗口为 5 分钟，轮询间隔为 3 秒；搜索页二次登录等待窗口同样为 5 分钟，轮询间隔为 3 秒
+- 除非测试目标就是验证“人工中断”的处理逻辑，否则不得在 5 分钟等待窗口内主动发送 `Ctrl+C` 或关闭浏览器
+- 若 5 分钟内完成登录并继续执行，记录“人工协助成功”而非“脚本阻塞”
+- 若脚本自然等待满 5 分钟后自行报超时退出，再判定为失败，并归类为“登录超时”而非“采集脚本崩溃”
+
 ## 6. 前置条件
 
 执行前确认：
@@ -202,7 +212,7 @@
 #### TC-ENV-001 首次运行环境未就绪
 
 - 目标：验证首次运行会执行 `bootstrap-playwright.js`，而不是跳过环境检查。
-- 前置条件：`xiaohongshu.md` 中 `环境状态`、`Playwright依赖`、`Chromium浏览器` 设为 `未设置` 或 `未就绪`。
+- 前置条件：`xiaohongshu.md` 不存在，或其 `环境状态`、`Playwright依赖`、`Chromium浏览器` 设为 `未设置` 或 `未就绪`。
 - 操作：
   1. 触发 skill。
   2. 观察日志是否出现环境检查。
@@ -333,7 +343,7 @@ node ".claude/skills/xiaohongshu-playwright/scripts/save-task-spec.js" \
 #### TC-MODE-001 首次设置运行模式
 
 - 目标：验证首次使用会询问运行模式并写回站点经验文件。
-- 前置条件：`用户习惯` 中 `运行模式` 为 `未设置`。
+- 前置条件：`xiaohongshu.md` 不存在，或 `用户习惯` 中 `运行模式` 为 `未设置`。
 - 操作：
   1. 触发 skill。
   2. 选择 `后台静默运行` 或 `打开浏览器运行`。
@@ -362,6 +372,9 @@ node ".claude/skills/xiaohongshu-playwright/scripts/save-task-spec.js" \
 #### TC-SCRAPER-001 基本采集成功
 
 - 目标：验证采集链路可跑通。
+- 前置条件：
+  - 已存在合法 task spec
+  - 已存在可用 cookie，或测试执行方可在脚本等待窗口内完成人工登录
 - 命令：
 
 ```bash
@@ -393,10 +406,30 @@ node ".claude/skills/xiaohongshu-playwright/scripts/xhs-scraper.js" \
 
 - 目标：验证首次或 cookie 失效时进入登录流程。
 - 前置条件：删除 `data/cookies.json`。
+- 操作：
+  1. 以 `--headed` 或无头二维码模式运行 `xhs-scraper.js`
+  2. 观察脚本是否进入登录等待分支
+  3. 在脚本内置等待窗口 5 分钟内完成扫码/登录，或等待脚本自然超时
 - 预期结果：
   - 有头模式：提示在浏览器窗口中登录
   - 无头模式：保存二维码 PNG 并提示扫码
-  - 登录成功后保存 cookie
+  - 脚本在 5 分钟内持续等待，不应在 20 到 30 秒内被测试方人工中断后误记为失败
+  - 登录成功后保存 cookie 并继续抓取
+  - 若 5 分钟内未完成登录，脚本自行输出 `登录超时（5分钟）` 后退出
+
+#### TC-SCRAPER-003A 人工登录等待窗口
+
+- 目标：验证测试执行过程不会早于脚本内置超时错误地终止登录等待。
+- 前置条件：删除 `data/cookies.json`，并使用真实站点 E2E 环境。
+- 操作：
+  1. 运行 `xhs-scraper.js --headed`
+  2. 在日志出现 `请直接在浏览器窗口中完成登录` 后开始计时
+  3. 在前 60 秒内仅观察日志，不主动发送 `Ctrl+C`，不关闭浏览器
+  4. 如需继续完整链路，允许人工扫码；如需验证超时，则等待脚本自然达到 5 分钟
+- 预期结果：
+  - 日志每 3 秒左右刷新一次等待时长
+  - 在 5 分钟内脚本保持等待态，不应自行提前退出
+  - 若由测试执行方提前中断，该次结果标记为“测试中止”，不得记为脚本失败
 
 #### TC-SCRAPER-004 搜索页登录复核
 
@@ -434,7 +467,7 @@ node ".claude/skills/xiaohongshu-playwright/scripts/xhs-scraper.js" \
 #### TC-SCRAPER-008 无帖子结果
 
 - 目标：验证无结果场景报错清晰。
-- 操作：使用极低相关关键词或未登录状态触发。
+- 操作：使用极低相关关键词，或在完成登录后使用无结果关键词触发。
 - 预期结果：
   - stderr 包含 `未找到任何帖子`
   - 退出码非 0
@@ -761,13 +794,14 @@ node ".claude/skills/xiaohongshu-playwright/scripts/cleanup-task-specs.js" --key
 2. `TC-ENV-006`
 3. `TC-SPEC-001`
 4. `TC-MODE-001`
-5. `TC-SCRAPER-001`
-6. `TC-FILTER-001`
-7. `TC-AI-001`
-8. `TC-MERGE-001`
-9. `TC-EXCEL-001`
-10. `TC-CLEANUP-001`
-11. `TC-PATTERN-001`
+5. `TC-SCRAPER-003A`
+6. `TC-SCRAPER-001`
+7. `TC-FILTER-001`
+8. `TC-AI-001`
+9. `TC-MERGE-001`
+10. `TC-EXCEL-001`
+11. `TC-CLEANUP-001`
+12. `TC-PATTERN-001`
 
 日常回归建议：
 

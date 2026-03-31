@@ -10,16 +10,11 @@ description: 在小红书上挖掘潜在客户和目标用户。搜索关键词�
 ## 依赖
 
 - Node.js 22+
-- Playwright（`npx playwright` 或全局安装）
-- rebrowser-patches（`npm install rebrowser-patches`）— 修复 CDP leak 和 navigator.webdriver 检测，不装的话小红书反爬系统能直接识别出自动化浏览器
-- exceljs（`npm install exceljs`）— Excel 生成脚本依赖
+- Playwright（浏览器自动化）
+- rebrowser-patches（反检测补丁，修复 CDP leak 和 navigator.webdriver）
+- exceljs（Excel 生成）
 
-首次环境检查与安装统一在 **步骤 1a** 执行：
-
-- npm 依赖安装：阿里镜像源（npmmirror）优先，失败回退官方源
-- Playwright Chromium：先尝试阿里镜像源（npmmirror）下载，失败回退官方源
-- skill 根目录通过 `.npmrc` 固定 `registry=https://registry.npmmirror.com`，重建 `node_modules` / `package-lock.json` 时默认走淘宝镜像
-- 环境未就绪前，不进入运行模式选择和正式采集
+首次环境检查与安装统一在 **步骤 1a** 执行。详细安装指南参见 [environment-setup.md](references/environment-setup.md)
 
 ## 使用方式
 
@@ -118,33 +113,10 @@ AI 收到用户输入后，**立即同时发起以下两路，互不等待**：
 
 ```bash
 SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
-
 cd "${SKILL_DIR}" && node scripts/bootstrap-playwright.js
 ```
 
-该脚本内部已完成：
-- `playwright@1.48.0`、`rebrowser-patches`、`exceljs` 的固定版本安装
-- npm 源优先 `npmmirror`，失败回退官方源
-- Playwright Chromium 下载优先 `npmmirror`，失败回退官方源
-- Linux、macOS、Windows 的环境变量差异收口到脚本内部处理
-
-如需**彻底重建依赖树与 lockfile**（例如 `package-lock.json` 里混入了 `registry.npmjs.org`）：
-
-```bash
-SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-rm -rf "${SKILL_DIR}/node_modules" "${SKILL_DIR}/package-lock.json"
-cd "${SKILL_DIR}" && npm install --registry=https://registry.npmmirror.com
-```
-
-重建后应检查 `package-lock.json` 中的 `resolved` 是否统一指向 `https://registry.npmmirror.com/`。
-
-执行时必须持续给用户反馈当前阶段，至少包括：
-- 正在检查 npm 依赖
-- 正在安装 npm 依赖（如需要）
-- 正在检查 Playwright Chromium
-- 正在下载 Playwright Chromium（首次安装可能较慢）
-- 环境初始化完成
+执行时持续给用户反馈当前阶段（检查依赖 → 安装依赖 → 下载浏览器 → 完成）。
 
 安装完成后，更新 `references/site-patterns/xiaohongshu.md` 的「本地环境」段落：
 - `环境状态: 已就绪`
@@ -154,7 +126,9 @@ cd "${SKILL_DIR}" && npm install --registry=https://registry.npmmirror.com
 
 **如果环境已就绪**：直接标记 1a 完成。
 
-**如果安装失败**：把失败原因和当前阶段告诉用户，并在站点经验文件里补充备注，避免静默卡死。
+**如果安装失败**：告知用户失败原因，并在站点经验文件补充备注。
+
+**详细安装指南**：参见 [environment-setup.md](references/environment-setup.md)（包含镜像源配置、依赖重建、常见问题排查）
 
 #### 步骤 1b：生成任务规格
 

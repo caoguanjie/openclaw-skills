@@ -159,3 +159,45 @@ try {
 **相关文件**：
 - `.claude/skills/xiaohongshu-playwright/scripts/xhs-scraper.js`
 - `.claude/skills/xiaohongshu-playwright/lib/**/*`
+
+---
+
+## 环境设置参考文档创建
+
+**日期**: 2026-03-31  
+**模块**: `xiaohongshu-playwright`  
+**状态**: ✅ 已完成
+
+### 问题描述
+
+SKILL.md 文件包含大量环境设置细节（bootstrap 流程、镜像回退逻辑、package-lock 重建步骤），导致文档冗长（530 行），超出 skill-creator 推荐的 500 行上限。
+
+环境配置细节混杂在主流程中，影响文档可读性和维护性。
+
+### 解决方案
+
+将环境设置细节迁移到独立的参考文档 `references/environment-setup.md`，SKILL.md 保留简洁的流程描述并添加参考链接。
+
+**修改内容**：
+1. 创建 `references/environment-setup.md`（4.6KB）：
+   - 系统要求
+   - 依赖安装（自动化脚本、镜像源策略、依赖重建）
+   - 环境验证
+   - 常见问题排查（4 个场景）
+   - 环境检查清单
+   - 首次运行准备
+
+2. 精简 SKILL.md：
+   - 步骤 1a：44 行 → 18 行
+   - 依赖部分：9 行 → 3 行
+   - 总行数：530 → 503 行（减少 27 行）
+   - 添加两处参考链接
+
+**效果**：
+- 环境设置细节集中管理，便于维护
+- SKILL.md 流程更清晰，为后续瘦身打好基础
+- 保持文档完整性，无信息丢失
+
+**相关文件**：
+- `.claude/skills/xiaohongshu-playwright/SKILL.md`
+- `.claude/skills/xiaohongshu-playwright/references/environment-setup.md`
