@@ -3,6 +3,11 @@
 /**
  * 小红书评论采集脚本 - 基于 Playwright + 人类化行为模拟
  *
+ * 架构说明:
+ *   - 通用工具函数已抽离到 lib/utils (字符串、文件、进程处理)
+ *   - Playwright 工具已抽离到 lib/playwright (滚动、会话、上下文恢复)
+ *   - 小红书业务逻辑已抽离到 lib/xhs (Cookie、数据持久化、解析器)
+ *
  * 用法:
  *   node xhs-scraper.js --keyword "护肤" --max-posts 5 --max-comments 20
  *   node xhs-scraper.js --keyword "医美" --speed slow     # 慢速模式，更安全
@@ -19,9 +24,12 @@ try {
   console.warn("   建议运行: node scripts/bootstrap-playwright.js");
 }
 
+// External 依赖
 const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
+
+// Local 模块 (human)
 const {
   CONFIG,
   DELAYS,
@@ -38,11 +46,12 @@ const {
   randomInt,
 } = require("./human");
 
-// 通用工具模块
+// Lib 模块 - 通用工具
 const { extractNoteId, sanitizeKeywordForFilename, normalizeStringArray } = require("../lib/utils/string");
 const { loadJsonFile, openFile } = require("../lib/utils/file");
 const { runNodeScript } = require("../lib/utils/process");
-// Playwright 工具模块
+
+// Lib 模块 - Playwright 工具
 const {
   getScrollMetrics,
   performScroll,
@@ -53,7 +62,8 @@ const {
   safeEval,
   safeLocatorOp,
 } = require("../lib/playwright");
-// 小红书业务模块
+
+// Lib 模块 - 小红书业务
 const {
   loadCookies: loadCookiesFromModule,
   saveCookies: saveCookiesFromModule,
@@ -124,22 +134,6 @@ function parseArgs() {
   }
   return opts;
 }
-
-// ─── 已抽离到 lib/utils/file.js ───
-// function openFile(filePath) {
-//   const { spawn } = require("child_process");
-//   try {
-//     if (process.platform === "win32") {
-//       spawn("cmd", ["/c", "start", "", filePath], { stdio: "ignore" });
-//     } else if (process.platform === "darwin") {
-//       spawn("open", [filePath], { stdio: "ignore" });
-//     } else {
-//       spawn("xdg-open", [filePath], { stdio: "ignore" });
-//     }
-//   } catch {
-//     // 静默失败，文件路径已打印到终端供用户手动打开
-//   }
-// }
 
 // ─── Playwright 浏览器安装检查 ───
 async function ensureBrowserInstalled() {
@@ -300,73 +294,6 @@ function shouldRebuildWorker() {
 // ─── 上下文安全包装 ───
 const CONTEXT_DESTROYED_RE = /Execution context was destroyed|Cannot find context|Target closed|frame was detached/i;
 
-// ─── 已抽离到 lib/playwright/session.js ───
-// async function probeDetailSession(page, targetNoteId) {
-//   return await page.evaluate(({ noteId, scrollSelectors }) => {
-//     const isVisible = (el) =>
-//       !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-// 
-//     const activeNoteId =
-//       location.href.match(/\/([a-f0-9]{24})\b/i)?.[1] ||
-//       Object.keys(window.__INITIAL_STATE__?.note?.noteDetailMap || {})[0] ||
-//       "";
-// 
-//     const scrollSelector =
-//       scrollSelectors.find((selector) => {
-//         const el = document.querySelector(selector);
-//         return isVisible(el) && el.scrollHeight > el.clientHeight + 20;
-//       }) || "";
-// 
-//     const hasComments = !!document.querySelector(".comments-container");
-//     const hasLoginLayer = !!document.querySelector(".login-container, [class*='login-modal']");
-//     const hasRiskLayer = /300013|访问频繁|请稍后再试/.test(document.body?.innerText || "");
-// 
-//     return {
-//       ok: activeNoteId === noteId && hasComments && !hasLoginLayer && !hasRiskLayer,
-//       activeNoteId,
-//       scrollSelector,
-//       scrollMode: scrollSelector ? "container" : "window",
-//       hasComments,
-//       hasLoginLayer,
-//       hasRiskLayer,
-//     };
-//   }, { noteId: targetNoteId, scrollSelectors: DETAIL_SCROLL_SELECTORS });
-// }
-
-// ─── 已抽离到 lib/playwright/context-recovery.js ───
-// async function recoverOrThrow(page, label, targetNoteId) {
-//   await page.waitForLoadState("domcontentloaded").catch(() => null);
-//   await sleepRandom(500, 1200);
-// 
-//   const session = await probeDetailSession(page, targetNoteId).catch(() => null);
-//   if (!session?.ok) {
-//     throw new Error(`DetailSessionLostError: ${label}`);
-//   }
-//   return session;
-// }
-// 
-// async function safeEval(page, label, fn, arg, targetNoteId) {
-//   try {
-//     return await page.evaluate(fn, arg);
-//   } catch (error) {
-//     if (!CONTEXT_DESTROYED_RE.test(error?.message || "")) throw error;
-//     console.warn(`  ⚠️ 上下文销毁 [${label}]，尝试恢复...`);
-//     await recoverOrThrow(page, label, targetNoteId);
-//     return await page.evaluate(fn, arg);
-//   }
-// }
-// 
-// async function safeLocatorOp(page, label, locatorFn, targetNoteId) {
-//   try {
-//     return await locatorFn();
-//   } catch (error) {
-//     if (!CONTEXT_DESTROYED_RE.test(error?.message || "")) throw error;
-//     console.warn(`  ⚠️ 上下文销毁 [${label}]，尝试恢复...`);
-//     await recoverOrThrow(page, label, targetNoteId);
-//     return await locatorFn();
-//   }
-// }
-
 // ─── goto 前后人类化延迟 ───
 async function applyPreGotoHumanDelay(searchPage) {
   await sleepRandom(1500, 3500);
@@ -385,37 +312,7 @@ async function applyPostGotoHumanDelay(detailPage) {
   await sleepRandom(2000, 4000);
 }
 
-// ─── 已抽离到 lib/utils/string.js ───
-// function extractNoteId(value) {
-//   const text = String(value || "");
-//   const match = text.match(/\/([a-f0-9]{24})\b/i);
-//   return match ? match[1] : "";
-// }
-
 // ─── Cookie 管理 ───
-// ─── 已抽离到 lib/xhs/cookies.js ───
-// async function loadCookies(context, cookiePath) {
-//   if (fs.existsSync(cookiePath)) {
-//     try {
-//       const cookies = JSON.parse(fs.readFileSync(cookiePath, "utf-8"));
-//       if (Array.isArray(cookies) && cookies.length > 0) {
-//         const now = Date.now() / 1000;
-//         const valid = cookies.filter(
-//           (c) => !c.expires || c.expires === -1 || c.expires > now
-//         );
-//         if (valid.length > 0) {
-//           await context.addCookies(valid);
-//           console.log(`已加载 ${valid.length} 个有效 cookie（共 ${cookies.length} 个）`);
-//           return true;
-//         }
-//         console.warn("所有 cookie 已过期");
-//       }
-//     } catch (e) {
-//       console.warn("Cookie 文件解析失败:", e.message);
-//     }
-//   }
-//   return false;
-// }
 
 async function loadCookies(context, cookiePath) {
   const cookies = loadCookiesFromModule(cookiePath);
@@ -426,15 +323,6 @@ async function loadCookies(context, cookiePath) {
   }
   return false;
 }
-
-// ─── 已抽离到 lib/xhs/cookies.js ───
-// async function saveCookies(context, cookiePath) {
-//   const cookies = await context.cookies();
-//   const dir = path.dirname(cookiePath);
-//   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-//   fs.writeFileSync(cookiePath, JSON.stringify(cookies, null, 2), "utf-8");
-//   console.log(`已保存 ${cookies.length} 个 cookie`);
-// }
 
 async function saveCookies(context, cookiePath) {
   return saveCookiesFromModule(context, cookiePath);
@@ -699,281 +587,8 @@ async function searchPosts(page, keyword, maxPosts, context, cookiePath) {
   return { posts: selected, searchUrl };
 }
 
-// ─── 已抽离到 lib/xhs/parser.js ───
-// function parseStateComments(noteDetailMap, feedId) {
-//   let noteData = noteDetailMap[feedId];
-//   if (!noteData) {
-//     const keys = Object.keys(noteDetailMap);
-//     if (keys.length > 0) noteData = noteDetailMap[keys[0]];
-//   }
-//   if (!noteData) return { note: null, comments: [] };
-//
-//   const rawNote = noteData.note || {};
-//   const note = {
-//     title: rawNote.title || "",
-//     desc: rawNote.desc || "",
-//     type: rawNote.type || "",
-//     ipLocation: rawNote.ipLocation || "",
-//     author: rawNote.user?.nickname || rawNote.user?.nickName || "",
-//     authorId: rawNote.user?.userId || "",
-//     commentCount: rawNote.interactInfo?.commentCount || "0",
-//     likedCount: rawNote.interactInfo?.likedCount || "0",
-//     collectedCount: rawNote.interactInfo?.collectedCount || "0",
-//   };
-//
-//   const rawComments = noteData.comments?.list || [];
-//   const comments = [];
-//
-//   for (const c of rawComments) {
-//     const userId = c.userInfo?.userId || "";
-//     comments.push({
-//       id: c.id || "",
-//       username: c.userInfo?.nickname || c.userInfo?.nickName || "",
-//       userId,
-//       avatar: c.userInfo?.avatar || "",
-//       content: c.content || "",
-//       likes: c.likeCount || "0",
-//       createTime: c.createTime || 0,
-//       ipLocation: c.ipLocation || "",
-//       profileUrl: userId
-//         ? `https://www.xiaohongshu.com/user/profile/${userId}`
-//         : "",
-//       subCommentCount: c.subCommentCount || "0",
-//       subComments: (c.subComments || []).map((sub) => {
-//         const subUserId = sub.userInfo?.userId || "";
-//         return {
-//           id: sub.id || "",
-//           username: sub.userInfo?.nickname || sub.userInfo?.nickName || "",
-//           userId: subUserId,
-//           content: sub.content || "",
-//           likes: sub.likeCount || "0",
-//           ipLocation: sub.ipLocation || "",
-//           profileUrl: subUserId
-//             ? `https://www.xiaohongshu.com/user/profile/${subUserId}`
-//             : "",
-//         };
-//       }),
-//     });
-//   }
-//
-//   return { note, comments };
-// }
-
 function parseStateComments(noteDetailMap, feedId) {
   return parseStateCommentsFromModule(noteDetailMap, feedId);
-}
-
-// ─── 已抽离到 lib/playwright/scroll.js ───
-// async function getScrollMetrics(page, detailContext) {
-//   return page.evaluate((ctx) => {
-//     const target =
-//       ctx.scrollMode === "container" && ctx.scrollSelector
-//         ? document.querySelector(ctx.scrollSelector)
-//         : document.scrollingElement || document.documentElement;
-// 
-//     if (!target) {
-//       return {
-//         top: 0,
-//         viewportHeight: window.innerHeight,
-//         scrollHeight: 0,
-//       };
-//     }
-// 
-//     if (ctx.scrollMode === "container") {
-//       return {
-//         top: target.scrollTop,
-//         viewportHeight: target.clientHeight || window.innerHeight,
-//         scrollHeight: target.scrollHeight || target.clientHeight || 0,
-//       };
-//     }
-// 
-//     return {
-//       top: window.scrollY || document.documentElement.scrollTop,
-//       viewportHeight: window.innerHeight,
-//       scrollHeight:
-//         document.scrollingElement?.scrollHeight || document.body?.scrollHeight || 0,
-//     };
-//   }, detailContext);
-// }
-
-// ─── 已抽离到 lib/playwright/scroll.js ───
-// async function performScroll(page, detailContext, delta, forceToBottom = false) {
-//   return page.evaluate(
-//     ({ ctx, step, toBottom }) => {
-//       const target =
-//         ctx.scrollMode === "container" && ctx.scrollSelector
-//           ? document.querySelector(ctx.scrollSelector)
-//           : document.scrollingElement || document.documentElement;
-// 
-//       if (!target) {
-//         return 0;
-//       }
-// 
-//       if (ctx.scrollMode === "container") {
-//         const before = target.scrollTop;
-//         target.scrollTo({
-//           top: toBottom ? target.scrollHeight : before + step,
-//           behavior: "smooth",
-//         });
-//         return before;
-//       }
-// 
-//       const before = window.scrollY || document.documentElement.scrollTop;
-//       if (toBottom) {
-//         window.scrollTo(0, document.body.scrollHeight);
-//       } else {
-//         window.scrollBy({ top: step, behavior: "smooth" });
-//       }
-//       return before;
-//     },
-//     { ctx: detailContext, step: Math.round(delta), toBottom: forceToBottom }
-//   );
-// }
-
-// ─── 已抽离到 lib/playwright/scroll.js ───
-// // ─── 人类化滚动（兼容弹窗滚动容器） ───
-// async function humanScroll(page, speed, largeMode, pushCount, detailContext) {
-//   const beforeState = await getScrollMetrics(page, detailContext);
-//   let baseRatio = getScrollRatio(speed);
-//   if (largeMode) {
-//     baseRatio *= 2.0;
-//   }
-// 
-//   let actualDelta = 0;
-//   let currentScrollTop = beforeState.top;
-//   let prevTop = beforeState.top;
-//   let furthestScrollTop = beforeState.top;
-// 
-//   for (let i = 0; i < Math.max(1, pushCount); i++) {
-//     const scrollDelta = calculateScrollDelta(beforeState.viewportHeight, baseRatio);
-//     await performScroll(page, detailContext, scrollDelta);
-//     await sleepRandom(...DELAYS.SCROLL_WAIT);
-// 
-//     const state = await getScrollMetrics(page, detailContext);
-//     currentScrollTop = state.top;
-//     furthestScrollTop = Math.max(furthestScrollTop, currentScrollTop);
-//     const deltaThis = currentScrollTop - prevTop;
-//     prevTop = currentScrollTop;
-// 
-//     if (
-//       shouldBacktrackScroll(
-//         speed,
-//         largeMode,
-//         currentScrollTop,
-//         state.viewportHeight || beforeState.viewportHeight
-//       )
-//     ) {
-//       const backtrackDelta = calculateBacktrackDelta(
-//         state.viewportHeight || beforeState.viewportHeight,
-//         Math.max(deltaThis, scrollDelta),
-//         currentScrollTop
-//       );
-//       await performScroll(page, detailContext, -backtrackDelta);
-//       await sleepRandom(...DELAYS.POST_SCROLL);
-// 
-//       const afterBacktrackState = await getScrollMetrics(page, detailContext);
-//       currentScrollTop = afterBacktrackState.top;
-//       prevTop = currentScrollTop;
-//     }
-// 
-//     actualDelta = furthestScrollTop - beforeState.top;
-// 
-//     if (i < pushCount - 1) {
-//       await sleepRandom(...DELAYS.HUMAN_DELAY);
-//     }
-//   }
-// 
-//   if (actualDelta < CONFIG.MIN_SCROLL_DELTA && pushCount > 0) {
-//     await performScroll(page, detailContext, 0, true);
-//     await sleepRandom(...DELAYS.POST_SCROLL);
-//     const state = await getScrollMetrics(page, detailContext);
-//     currentScrollTop = state.top;
-//     actualDelta = currentScrollTop - beforeState.top;
-//   }
-// 
-//   return { actualDelta, currentScrollTop };
-// }
-
-// ─── 已抽离到 lib/playwright/scroll.js ───
-// // ─── 滚动到评论区（兼容弹窗滚动容器） ───
-// async function scrollToCommentsArea(page, detailContext) {
-//   console.log("  📜 滚动到评论区...");
-//   await page.evaluate((ctx) => {
-//     const root = ctx.rootSelector ? document.querySelector(ctx.rootSelector) : document;
-//     const container = root?.querySelector(".comments-container") || document.querySelector(".comments-container");
-//     if (container) {
-//       container.scrollIntoView({ behavior: "smooth", block: "center" });
-//     }
-// 
-//     const target =
-//       ctx.scrollMode === "container" && ctx.scrollSelector
-//         ? document.querySelector(ctx.scrollSelector)
-//         : window;
-//     target.dispatchEvent(
-//       new WheelEvent("wheel", {
-//         deltaY: 100,
-//         bubbles: true,
-//       })
-//     );
-//   }, detailContext);
-//   await sleepRandom(500, 1000);
-// }
-
-
-// ─── 已抽离到 lib/xhs/data-persistence.js ───
-// function loadExistingData(outputPath, keyword) {
-//   if (!fs.existsSync(outputPath)) {
-//     return { existingPosts: [], collectedUrls: new Set() };
-//   }
-//   try {
-//     const data = JSON.parse(fs.readFileSync(outputPath, "utf-8"));
-//     // 只匹配同关键词的数据
-//     if (data.keyword !== keyword) {
-//       console.log(`📂 已有数据关键词不匹配（"${data.keyword}" vs "${keyword}"），不去重`);
-//       return { existingPosts: [], collectedUrls: new Set() };
-//     }
-//     const existingPosts = data.posts || [];
-//     const collectedUrls = new Set(existingPosts.map((p) => p.url));
-//     console.log(`📂 已有 ${existingPosts.length} 篇帖子数据，将跳过已采集帖子`);
-//     return { existingPosts, collectedUrls };
-//   } catch (e) {
-//     console.warn("读取已有数据失败:", e.message);
-//     return { existingPosts: [], collectedUrls: new Set() };
-//   }
-// }
-
-function loadExistingData(outputPath, keyword) {
-  return loadExistingDataFromModule(outputPath, keyword);
-}
-
-// ─── 已抽离到 lib/xhs/data-persistence.js ───
-// function appendPostResult(outputPath, keyword, postData) {
-//   let existing = { keyword, scrapeTime: new Date().toISOString(), posts: [] };
-//   if (fs.existsSync(outputPath)) {
-//     try {
-//       existing = JSON.parse(fs.readFileSync(outputPath, "utf-8"));
-//     } catch {
-//       // 文件损坏时从空开始
-//     }
-//   }
-//
-//   const noteId = postData.noteId;
-//   const existingIds = new Set(existing.posts.map((p) => p.noteId));
-//   if (existingIds.has(noteId)) {
-//     return false; // 已存在，跳过
-//   }
-//
-//   existing.posts.push(postData);
-//   existing.scrapeTime = new Date().toISOString();
-//
-//   const dir = path.dirname(outputPath);
-//   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-//   fs.writeFileSync(outputPath, JSON.stringify(existing, null, 2), "utf-8");
-//   return true;
-// }
-
-function appendPostResult(outputPath, keyword, postData) {
-  return appendPostResultFromModule(outputPath, keyword, postData);
 }
 
 // ─── 评论加载状态机（对应 Python feed_detail.py: _load_all_comments） ───
@@ -1375,29 +990,6 @@ async function processPostWithRetry(context, post, opts, maxRetries = 3) {
   return null;
 }
 
-// ─── 已抽离到 lib/utils/string.js ───
-// function sanitizeKeywordForFilename(keyword) {
-//   return String(keyword || 'keyword').replace(/[\\/:*?"<>|\s]+/g, '_').replace(/^_+|_+$/g, '') || 'keyword';
-// }
-
-// ─── 已抽离到 lib/utils/file.js ───
-// function loadJsonFile(filePath, label = "JSON 文件") {
-//   const text = fs.readFileSync(filePath, "utf-8");
-//   try {
-//     return JSON.parse(text);
-//   } catch (error) {
-//     throw new Error(`${label} 解析失败: ${error.message}`);
-//   }
-// }
-
-// ─── 已抽离到 lib/utils/string.js ───
-// function normalizeStringArray(values, label) {
-//   if (!Array.isArray(values)) {
-//     throw new Error(`${label} 必须为数组`);
-//   }
-//   return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
-// }
-
 function loadTaskSpec(taskSpecPath, keyword) {
   if (!taskSpecPath) {
     throw new Error("必须传入 --task-spec。先生成 task spec，再运行采集/粗筛流程");
@@ -1432,15 +1024,6 @@ function loadTaskSpec(taskSpecPath, keyword) {
   }
   return { path: absolutePath, spec: normalized };
 }
-
-// ─── 已抽离到 lib/utils/process.js ───
-// function runNodeScript(scriptPath, args = []) {
-//   const { spawnSync } = require('child_process');
-//   const result = spawnSync(process.execPath, [scriptPath, ...args], { stdio: 'inherit' });
-//   if (result.status !== 0) {
-//     throw new Error(`脚本执行失败: ${path.basename(scriptPath)} (exit ${result.status})`);
-//   }
-// }
 
 function runPostPipeline(opts, result, taskSpec) {
   const skillDir = path.join(__dirname, '..');
