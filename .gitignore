@@ -25,10 +25,7 @@ venv/
 .claude/bash-command-log.txt
 
 # ─── 运行时数据（cookie、采集输出、临时文件） ───
-.claude/skills/xiaohongshu-playwright/data/cookies.json
-.claude/skills/xiaohongshu-playwright/data/comments.json
-.claude/skills/xiaohongshu-playwright/data/analysis.json
-.claude/skills/xiaohongshu-playwright/data/screenshots/
+.claude/skills/xiaohongshu-playwright/data/**
 .claude/skills/xiaohongshu-playwright/output/*.xlsx
 .claude/skills/xiaohongshu-playwright/node_modules/
 .claude/skills/hr-system/scripts/__pycache__/

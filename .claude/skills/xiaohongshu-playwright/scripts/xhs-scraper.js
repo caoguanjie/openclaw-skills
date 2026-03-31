@@ -294,24 +294,6 @@ function shouldRebuildWorker() {
 // ─── 上下文安全包装 ───
 const CONTEXT_DESTROYED_RE = /Execution context was destroyed|Cannot find context|Target closed|frame was detached/i;
 
-// ─── goto 前后人类化延迟 ───
-async function applyPreGotoHumanDelay(searchPage) {
-  await sleepRandom(1500, 3500);
-
-  const moves = randomInt(1, 3);
-  for (let i = 0; i < moves; i++) {
-    const delta = randomInt(80, 260) * (Math.random() > 0.3 ? 1 : -1);
-    await searchPage.evaluate((value) => {
-      window.scrollBy({ top: value, behavior: "smooth" });
-    }, delta).catch(() => null);
-    await sleepRandom(400, 900);
-  }
-}
-
-async function applyPostGotoHumanDelay(detailPage) {
-  await sleepRandom(2000, 4000);
-}
-
 // ─── Cookie 管理 ───
 
 async function loadCookies(context, cookiePath) {
