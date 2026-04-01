@@ -261,3 +261,56 @@ SKILL.md 文件有 503 行，虽然通过 Sprint 1.5 减少了 27 行，但仍�
 - `.claude/skills/xiaohongshu-playwright/SKILL.md`
 - `.claude/skills/xiaohongshu-playwright/references/subagent-task-template.md`
 - `.claude/skills/xiaohongshu-playwright/references/excel-format.md`
+
+---
+
+## 完善 Eval 断言
+
+**日期**: 2026-04-01  
+**模块**: `xiaohongshu-playwright`  
+**状态**: ✅ 已完成
+
+### 问题描述
+
+`evals/evals.json` 文件只有 `expected_output` 文本描述，缺少 `assertions` 字段，不符合 skill-creator 的 evals schema 标准，无法进行自动化验证。
+
+### 解决方案
+
+为现有 3 个测试用例添加 `assertions` 数组字段，每个断言明确可验证的输出条件。
+
+**修改内容**：
+
+1. **Eval 1（医美/热玛吉）** - 添加 7 条断言：
+   - output/ 目录存在 Excel 文件（文件名包含'热玛吉'）
+   - Excel 包含 16 列表头
+   - 至少有 1 个用户的 interestScore >= 6
+   - data/ 目录存在 analysis_热玛吉.json 文件
+   - analysis.json 中 posts 数组长度 <= 5
+   - data/comments_热玛吉.json 文件被创建
+   - data/screenshots/ 目录包含 .png 截图文件
+
+2. **Eval 2（考研英语）** - 添加 6 条断言：
+   - output/ 目录存在 Excel 文件（文件名包含'考研英语'）
+   - Excel 中所有用户的 interestScore >= 7
+   - data/analysis_考研英语.json 中 posts 数组长度 <= 3
+   - analysis.json 的 validComments 中每条都有 interestTags 字段
+   - analysis.json 的 validComments 中每条都有 reason 字段
+   - 筛选标准应体现'报班意向'和'求资料需求'
+
+3. **Eval 3（多关键词）** - 添加 7 条断言：
+   - output/ 目录存在两个独立的 Excel 文件
+   - data/ 目录存在 comments_露营装备.json 文件
+   - data/ 目录存在 comments_户外徒步.json 文件
+   - data/ 目录存在 analysis_露营装备.json 文件
+   - data/ 目录存在 analysis_户外徒步.json 文件
+   - 脚本执行日志显示使用了 --speed slow 参数
+   - 两个关键词的流程均无报错完成
+
+**效果**：
+- 符合 skill-creator 的 evals schema 标准
+- 支持自动化测试验证
+- 覆盖文件输出、数据完整性、参数传递等关键场景
+- JSON 格式验证通过
+
+**相关文件**：
+- `.claude/skills/xiaohongshu-playwright/evals/evals.json`
