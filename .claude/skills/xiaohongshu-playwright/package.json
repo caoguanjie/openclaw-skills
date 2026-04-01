@@ -5,7 +5,12 @@
   "main": "index.js",
   "scripts": {
     "bootstrap:playwright": "node scripts/bootstrap-playwright.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node tests/run-all.js",
+    "test:spec": "node tests/scripts/save-task-spec.test.js",
+    "test:filter": "node tests/scripts/filter-comments.test.js",
+    "test:merge": "node tests/scripts/merge-analysis.test.js",
+    "test:excel": "node tests/scripts/generate-excel.test.js",
+    "test:cleanup": "node tests/scripts/cleanup-task-specs.test.js"
   },
   "keywords": [],
   "author": "",

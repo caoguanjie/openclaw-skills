@@ -419,3 +419,67 @@ SKILL.md 文件有 503 行，虽然通过 Sprint 1.5 减少了 27 行，但仍�
 
 **相关文件**：
 - `.claude/skills/xiaohongshu-playwright/scripts/xhs-scraper.js`
+
+---
+
+## 模块导入函数名不一致导致运行时错误
+
+**日期**: 2026-04-01  
+**模块**: `xiaohongshu-playwright/xhs-scraper`  
+**状态**: ✅ 已修复
+
+### 问题描述
+
+`xhs-scraper.js` 从 `lib/xhs` 和 `lib/playwright` 模块导入函数时，使用了带 `FromModule` 后缀的别名（如 `loadExistingDataFromModule`），但在代码中调用时使用了不带后缀的函数名（如 `loadExistingData`），导致运行时报错 `is not defined`。
+
+具体错误：
+1. `loadExistingData is not defined` (line 1138)
+2. `applyPreGotoHumanDelay is not defined` (line 933)
+3. `appendPostResult is not defined` (line 1194)
+
+### 根本原因
+
+重构时将函数抽离到 lib 模块，导入时为避免命名冲突添加了 `FromModule` 后缀，但忘记更新调用处的函数名。
+
+### 解决方案
+
+统一函数调用名称，使用导入时的别名。
+
+**修改内容**：
+
+1. 修复 `loadExistingData` 调用：
+```javascript
+// 修改前
+const { existingPosts, collectedUrls } = loadExistingData(opts.output, opts.keyword);
+
+// 修改后
+const { existingPosts, collectedUrls } = loadExistingDataFromModule(opts.output, opts.keyword);
+```
+
+2. 补充缺失的 `applyPreGotoHumanDelay` 和 `applyPostGotoHumanDelay` 导入：
+```javascript
+const {
+  applyPreGotoHumanDelay,
+  applyPostGotoHumanDelay,
+  getScrollMetrics,
+  // ...其他导入
+} = require("../lib/playwright");
+```
+
+3. 修复 `appendPostResult` 调用：
+```javascript
+// 修改前
+const saved = appendPostResult(opts.output, opts.keyword, postResult);
+
+// 修改后
+const saved = appendPostResultFromModule(opts.output, opts.keyword, postResult);
+```
+
+**相关文件**：
+- `.claude/skills/xiaohongshu-playwright/scripts/xhs-scraper.js`
+
+**经验教训**：
+- 重构时应使用 IDE 的重命名功能或全局搜索替换，避免遗漏
+- 导入别名应保持简洁，避免不必要的后缀
+- 建议在重构后运行完整测试验证
+

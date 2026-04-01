@@ -54,6 +54,8 @@ const { runNodeScript } = require("../lib/utils/process");
 
 // Lib 模块 - Playwright 工具
 const {
+  applyPreGotoHumanDelay,
+  applyPostGotoHumanDelay,
   getScrollMetrics,
   performScroll,
   humanScroll,
@@ -1135,7 +1137,7 @@ async function main() {
     }
 
     // 2. 加载已有数据（帖子级去重）
-    const { existingPosts, collectedUrls } = loadExistingData(opts.output, opts.keyword);
+    const { existingPosts, collectedUrls } = loadExistingDataFromModule(opts.output, opts.keyword);
 
     // 3. 搜索帖子
     const { posts: allPosts, searchUrl } = await searchPosts(
@@ -1189,7 +1191,7 @@ async function main() {
 
         newPosts.push(postResult);
 
-        const saved = appendPostResult(opts.output, opts.keyword, postResult);
+        const saved = appendPostResultFromModule(opts.output, opts.keyword, postResult);
         if (saved) {
           console.log(`  💾 已增量保存到 ${path.basename(opts.output)} (累计 ${newPosts.length + existingPosts.length} 篇)`);
         }
