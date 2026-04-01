@@ -314,3 +314,51 @@ SKILL.md 文件有 503 行，虽然通过 Sprint 1.5 减少了 27 行，但仍�
 
 **相关文件**：
 - `.claude/skills/xiaohongshu-playwright/evals/evals.json`
+---
+
+## 反检测指纹系统优化
+
+**日期**: 2026-04-01  
+**模块**: `xiaohongshu-playwright`  
+**状态**: ✅ 已完成
+
+### 问题描述
+
+反检测指纹系统存在三个 P1 级问题：
+1. UA 版本过时（Chrome 124/125，应为 131+）
+2. `navigator.platform` 硬编码为 `'MacIntel'`，Windows 机器上与 UA 矛盾
+3. `hardwareConcurrency` 和 `deviceMemory` 固定为 8，每次运行指纹完全一致
+
+### 解决方案
+
+实现动态指纹系统，根据 UA 自动匹配 platform 并随机生成硬件参数。
+
+**修改内容**：
+
+1. 更新 `scripts/human.js` 的 USER_AGENTS 列表：
+   - Chrome 124/125 → Chrome 131/132
+   - 新增 Safari 18.x、Edge 131
+   - 覆盖 macOS、Windows、Linux 三平台（7 个 UA）
+
+2. 新增 `getFingerprint(ua)` 函数：
+   - 根据 UA 自动返回匹配的 platform（MacIntel/Win32/Linux x86_64）
+   - 随机返回 hardwareConcurrency（4/8/12/16）
+   - 随机返回 deviceMemory（4/8/16）
+
+3. 修改 `scripts/xhs-scraper.js`：
+   - ANTI_DETECT_SCRIPT 改用占位符（__PLATFORM__、__HARDWARE_CONCURRENCY__、__DEVICE_MEMORY__）
+   - 浏览器上下文创建后调用 getFingerprint() 获取动态指纹
+   - 通过字符串替换注入到反检测脚本
+
+**验证结果**：
+- ✅ 语法检查通过
+- ✅ getFingerprint() 单元测试通过
+- ✅ macOS UA → platform: 'MacIntel'
+- ✅ Windows UA → platform: 'Win32'
+- ✅ Linux UA → platform: 'Linux x86_64'
+
+**相关文件**：
+- `.claude/skills/xiaohongshu-playwright/scripts/human.js`
+- `.claude/skills/xiaohongshu-playwright/scripts/xhs-scraper.js`
+- `eventual-imagining-harbor.md`
+- `.codex/skills/xiaohongshu-playwright/ISSUES.md`
