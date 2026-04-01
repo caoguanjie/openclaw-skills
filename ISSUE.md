@@ -485,8 +485,6 @@ const saved = appendPostResultFromModule(opts.output, opts.keyword, postResult);
 
 
 
-
-
 ## 新电脑首次运行卡死问题
 
 **日期**: 2026-04-01  
@@ -529,3 +527,29 @@ const saved = appendPostResultFromModule(opts.output, opts.keyword, postResult);
 1. 创建 `references/site-patterns/xiaohongshu.md`
 2. 执行 `bootstrap-playwright.js` 安装依赖
 3. 正常进入后续流程
+
+
+## Windows 环境 bootstrap 脚本报错
+
+  **日期**: 2026-04-01
+  **状态**: 已修复
+  **模块**: xiaohongshu-playwright
+
+  ### 问题描述
+
+  在 Windows 环境运行 `bootstrap-playwright.js` 时报错：
+  ```
+  spawnSync npm.cmd EINVAL
+  ```
+
+  ### 根本原因
+
+  `spawnSync` 在 Windows 上执行 `.cmd` 文件时，需要 `shell: true` 选项才能正确调用。
+
+  ### 修复方案
+
+  在 `runCommand` 函数的 `spawnSync` 调用中添加：
+  ```javascript
+  shell: process.platform === "win32"
+  ```
+

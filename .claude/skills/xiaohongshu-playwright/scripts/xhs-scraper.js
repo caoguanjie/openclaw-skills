@@ -16,14 +16,6 @@
  * 输出: JSON 文件包含帖子及其评论数据
  */
 
-// rebrowser-patches: 修复 CDP leak、navigator.webdriver 等反检测
-try {
-  require("rebrowser-patches/patch");
-} catch {
-  console.warn("⚠️  rebrowser-patches 未安装，反检测能力降低");
-  console.warn("   建议运行: node scripts/bootstrap-playwright.js");
-}
-
 // External 依赖
 const { chromium } = require("playwright");
 const fs = require("fs");
@@ -390,6 +382,7 @@ async function manualLogin(page, context, cookiePath, opts = {}) {
         fs.writeFileSync(qrPath, Buffer.from(base64Data, "base64"));
 
         console.log(`📱 QR 码已保存: ${qrPath}`);
+        console.log(`[QR_CODE_PATH]${qrPath}`);
         console.log("⏳ 当前为后台静默运行，请用小红书 APP 扫描二维码登录...\n");
         openFile(qrPath);
         qrExtracted = true;

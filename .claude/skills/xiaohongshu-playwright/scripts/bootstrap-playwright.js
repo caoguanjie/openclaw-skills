@@ -28,6 +28,7 @@ function runCommand(command, args, options = {}) {
     cwd: SKILL_DIR,
     stdio: "inherit",
     env: options.env || process.env,
+    shell: process.platform === "win32",
   });
 
   if (result.error) {
@@ -116,6 +117,13 @@ function installChromium() {
   }
 }
 
+function patchPlaywright() {
+  log("正在给 Playwright 打反检测补丁");
+  if (!runCommand("npx", ["rebrowser-patches", "patch", "--packageName", "playwright"])) {
+    console.warn("⚠️  补丁应用失败，反检测能力可能降低");
+  }
+}
+
 function main() {
   log("正在检查 npm 依赖");
   if (hasExpectedDependencies()) {
@@ -130,6 +138,8 @@ function main() {
   } else {
     installChromium();
   }
+
+  patchPlaywright();
 
   log("环境初始化完成");
 }
