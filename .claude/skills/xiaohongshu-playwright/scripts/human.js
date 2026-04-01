@@ -203,7 +203,7 @@ function getFingerprint(ua) {
   }
 
   const hardwareConcurrency = [4, 8, 12, 16][Math.floor(Math.random() * 4)];
-  const deviceMemory = [4, 8, 16][Math.floor(Math.random() * 3)];
+  const deviceMemory = [4, 8][Math.floor(Math.random() * 2)]; // Chromium 上限为 8
 
   return { platform, hardwareConcurrency, deviceMemory };
 }

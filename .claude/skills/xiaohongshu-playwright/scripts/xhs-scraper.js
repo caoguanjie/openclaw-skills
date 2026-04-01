@@ -251,6 +251,7 @@ const DETAIL_SCROLL_SELECTORS = [
 
 // ─── Worker page 状态管理 ───
 let _workerPage = null;
+let _dynamicAntiDetectScript = ANTI_DETECT_SCRIPT; // 存储动态指纹脚本
 let _workerState = {
   postCount: 0,
   consecutiveContextErrors: 0,
@@ -268,7 +269,7 @@ function resetWorkerState() {
 async function getWorkerPage(context) {
   if (!_workerPage || _workerPage.isClosed()) {
     _workerPage = await context.newPage();
-    await _workerPage.addInitScript(ANTI_DETECT_SCRIPT);
+    await _workerPage.addInitScript(_dynamicAntiDetectScript);
     resetWorkerState();
     console.log("  🔧 Worker page 已创建");
   }
@@ -1075,11 +1076,11 @@ async function main() {
 
   // 生成动态指纹并注入反检测脚本
   const fingerprint = getFingerprint(userAgent);
-  const dynamicScript = ANTI_DETECT_SCRIPT
+  _dynamicAntiDetectScript = ANTI_DETECT_SCRIPT
     .replace('__PLATFORM__', fingerprint.platform)
     .replace('__HARDWARE_CONCURRENCY__', fingerprint.hardwareConcurrency)
     .replace('__DEVICE_MEMORY__', fingerprint.deviceMemory);
-  await page.addInitScript(dynamicScript);
+  await page.addInitScript(_dynamicAntiDetectScript);
 
   try {
     // 1. 加载 cookie + 检测登录态
