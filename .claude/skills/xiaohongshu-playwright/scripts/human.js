@@ -62,12 +62,18 @@ const RATE_LIMIT_KEYWORDS = [
 
 // ========== 常用 User-Agent 列表 ==========
 const USER_AGENTS = [
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  // macOS + Chrome 131/132
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  // Windows + Chrome 131/132
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  // macOS + Safari 18.x
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+  // Linux + Chrome 131
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  // Windows + Edge 131
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
 ];
 
 // ========== 核心函数 ==========
@@ -180,6 +186,29 @@ function randomUserAgent() {
 }
 
 /**
+ * 根据 User-Agent 生成匹配的浏览器指纹。
+ * @param {string} ua - User-Agent 字符串
+ * @returns {Object} { platform, hardwareConcurrency, deviceMemory }
+ */
+function getFingerprint(ua) {
+  let platform;
+  if (ua.includes('Macintosh')) {
+    platform = 'MacIntel';
+  } else if (ua.includes('Windows')) {
+    platform = 'Win32';
+  } else if (ua.includes('Linux')) {
+    platform = 'Linux x86_64';
+  } else {
+    platform = 'MacIntel';
+  }
+
+  const hardwareConcurrency = [4, 8, 12, 16][Math.floor(Math.random() * 4)];
+  const deviceMemory = [4, 8, 16][Math.floor(Math.random() * 3)];
+
+  return { platform, hardwareConcurrency, deviceMemory };
+}
+
+/**
  * 生成随机整数 [min, max]。
  * @param {number} min
  * @param {number} max
@@ -203,5 +232,6 @@ module.exports = {
   shouldBacktrackScroll,
   calculateBacktrackDelta,
   randomUserAgent,
+  getFingerprint,
   randomInt,
 };

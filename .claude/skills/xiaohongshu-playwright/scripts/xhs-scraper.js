@@ -43,6 +43,7 @@ const {
   shouldBacktrackScroll,
   calculateBacktrackDelta,
   randomUserAgent,
+  getFingerprint,
   randomInt,
 } = require("./human");
 
@@ -182,24 +183,24 @@ const ANTI_DETECT_SCRIPT = `
     });
   } catch {}
 
-  // 伪装 platform
+  // 伪装 platform（动态注入）
   try {
     Object.defineProperty(navigator, 'platform', {
-      get: () => 'MacIntel',
+      get: () => '__PLATFORM__',
     });
   } catch {}
 
-  // 伪装 hardwareConcurrency
+  // 伪装 hardwareConcurrency（动态注入）
   try {
     Object.defineProperty(navigator, 'hardwareConcurrency', {
-      get: () => 8,
+      get: () => __HARDWARE_CONCURRENCY__,
     });
   } catch {}
 
-  // 伪装 deviceMemory
+  // 伪装 deviceMemory（动态注入）
   try {
     Object.defineProperty(navigator, 'deviceMemory', {
-      get: () => 8,
+      get: () => __DEVICE_MEMORY__,
     });
   } catch {}
 
@@ -1059,20 +1060,26 @@ async function main() {
   });
 
   // viewport 随机偏移，避免指纹固定
+  const userAgent = randomUserAgent();
   const context = await browser.newContext({
     viewport: {
       width: 1280 + randomInt(-20, 20),
       height: 800 + randomInt(-20, 20),
     },
-    userAgent: randomUserAgent(),
+    userAgent,
     locale: "zh-CN",
     timezoneId: "Asia/Shanghai",
   });
 
   const page = await context.newPage();
 
-  // 注入反检测脚本
-  await page.addInitScript(ANTI_DETECT_SCRIPT);
+  // 生成动态指纹并注入反检测脚本
+  const fingerprint = getFingerprint(userAgent);
+  const dynamicScript = ANTI_DETECT_SCRIPT
+    .replace('__PLATFORM__', fingerprint.platform)
+    .replace('__HARDWARE_CONCURRENCY__', fingerprint.hardwareConcurrency)
+    .replace('__DEVICE_MEMORY__', fingerprint.deviceMemory);
+  await page.addInitScript(dynamicScript);
 
   try {
     // 1. 加载 cookie + 检测登录态

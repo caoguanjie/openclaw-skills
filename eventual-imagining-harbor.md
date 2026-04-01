@@ -129,7 +129,7 @@ xiaohongshu-playwright 是一个基于 Playwright 的小红书潜客挖掘工具
 > 目标：更新过时的反检测指纹；按 skill-creator 标准完善 eval 断言和触发描述。
 > 预计：3 个独立任务可并行。
 
-### 3.1 更新反检测指纹系统
+### 3.1 更新反检测指纹系统 ✅
 
 **问题**：
 - `scripts/human.js:64-71` 的 `USER_AGENTS` 使用 Chrome 124/125（已过时）
@@ -146,11 +146,28 @@ xiaohongshu-playwright 是一个基于 Playwright 的小红书潜客挖掘工具
   - 随机返回 `deviceMemory`（从 [4, 8, 16] 中选取）
 - `scripts/xhs-scraper.js` — 在 require 中引入 `getFingerprint`
 - `scripts/xhs-scraper.js` — 修改 `ANTI_DETECT_SCRIPT`（156-231 行）：
-  - 将硬编码的 `platform: 'MacIntel'`、`hardwareConcurrency: 8`、`deviceMemory: 8` 改为使用 `getFingerprint()` 返回的动态值
-  - 在 `launchBrowser()` 中调用 `getFingerprint(userAgent)` 获取指纹，注入到页面上下文
+  - 将硬编码的 `platform: 'MacIntel'`、`hardwareConcurrency: 8`、`deviceMemory: 8` 改为占位符
+  - 在浏览器上下文创建后调用 `getFingerprint(userAgent)` 获取指纹，通过字符串替换注入到脚本
 - 复杂度：**中**
 
-### 3.2 完善 Eval 断言
+**完成情况**：
+- ✅ 更新 USER_AGENTS 到 Chrome 131/132、Safari 18.x、Edge 131（7 个 UA）
+- ✅ 实现 getFingerprint() 函数（30 行，支持 macOS/Windows/Linux 平台识别）
+- ✅ 修改 ANTI_DETECT_SCRIPT 使用占位符（__PLATFORM__、__HARDWARE_CONCURRENCY__、__DEVICE_MEMORY__）
+- ✅ 在 xhs-scraper.js:1063-1081 实现动态指纹注入逻辑
+- ✅ 导出 getFingerprint 到 human.js module.exports
+
+**验证**：
+- ✅ `node -c scripts/human.js` 语法检查通过
+- ✅ `node -c scripts/xhs-scraper.js` 语法检查通过
+- ✅ getFingerprint() 单元测试通过：
+  - macOS UA → platform: 'MacIntel'
+  - Windows UA → platform: 'Win32'
+  - Linux UA → platform: 'Linux x86_64'
+  - hardwareConcurrency 随机返回 4/8/12/16
+  - deviceMemory 随机返回 4/8/16
+
+### 3.2 完善 Eval 断言 ✅
 
 **问题**：
 - `evals/evals.json` 当前只有 `expected_output` 文本描述，缺少 `assertions` 字段
@@ -198,6 +215,13 @@ xiaohongshu-playwright 是一个基于 Playwright 的小红书潜客挖掘工具
 ```
 
 - 复杂度：**小**
+
+**完成情况**：
+- ✅ 为 3 个测试用例添加 assertions 字段
+- ✅ Eval 1：7 条断言（覆盖文件输出、数据完整性）
+- ✅ Eval 2：6 条断言（覆盖自定义阈值、字段完整性）
+- ✅ Eval 3：7 条断言（覆盖多关键词、参数传递）
+- ✅ 符合 skill-creator 的 evals schema 标准
 
 ### 3.3 描述优化 + 触发评估
 
