@@ -82,6 +82,8 @@ function parseArgs() {
     maxPosts: 10,
     headed: false, // 默认无头
     speed: "normal", // slow | normal | fast
+    sort: "general", // general | hot | new
+    timeRange: "all", // all | 1d | 1w | 6m
     taskSpecPath: "",
     postProcessOnly: false,
     cookiePath: path.join(__dirname, "..", "data", "cookies.json"),
@@ -104,6 +106,12 @@ function parseArgs() {
         break;
       case "--speed":
         opts.speed = args[++i] || "normal";
+        break;
+      case "--sort":
+        opts.sort = args[++i] || "general";
+        break;
+      case "--time-range":
+        opts.timeRange = args[++i] || "all";
         break;
       case "--task-spec":
         opts.taskSpecPath = args[++i] || "";
@@ -493,9 +501,26 @@ async function ensureSearchPage(page, searchUrl, context, cookiePath) {
 }
 
 // ─── 搜索帖子 ───
-async function searchPosts(page, keyword, maxPosts, context, cookiePath) {
-  const searchUrl = `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}&source=web_search_result_note`;
-  console.log(`🔍 搜索关键词: ${keyword}`);
+async function searchPosts(page, keyword, maxPosts, context, cookiePath, sort = "general", timeRange = "all") {
+  // 映射用户参数到小红书 URL 查询参数
+  const sortMap = {
+    general: "general",
+    hot: "popularity_descending",
+    new: "time_descending",
+  };
+  const timeMap = {
+    "1d": "1d",
+    "1w": "1w",
+    "6m": "6m",
+  };
+
+  const sortParam = sortMap[sort] || "general";
+  const baseUrl = `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}&source=web_search_result_note&sort=${sortParam}`;
+  const searchUrl = timeRange !== "all" && timeMap[timeRange]
+    ? `${baseUrl}&search_filter_time=${timeMap[timeRange]}`
+    : baseUrl;
+
+  console.log(`🔍 搜索关键词: ${keyword}${sort !== "general" ? ` [排序: ${sort}]` : ""}${timeRange !== "all" ? ` [时间: ${timeRange}]` : ""}`);
 
   await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
   await navigationDelay();
@@ -505,7 +530,13 @@ async function searchPosts(page, keyword, maxPosts, context, cookiePath) {
   await sleepRandom(...DELAYS.HUMAN_DELAY);
 
   const candidateLimit = maxPosts * 2;
-  const posts = await page.evaluate(
+  let posts = [];
+  let scrollAttempts = 0;
+  const maxScrollAttempts = 10;
+
+  // 滚动加载搜索结果直到收集够候选帖子
+  while (posts.length < candidateLimit && scrollAttempts < maxScrollAttempts) {
+    const currentPosts = await page.evaluate(
     ({ max, selectors }) => {
       const items = [];
       const seenUrls = new Set();
@@ -551,6 +582,16 @@ async function searchPosts(page, keyword, maxPosts, context, cookiePath) {
     },
     { max: candidateLimit, selectors: SEARCH_RESULT_LINK_SELECTORS }
   );
+
+  const prevCount = posts.length;
+  posts = [...new Map([...posts, ...currentPosts].map(p => [p.noteId, p])).values()];
+
+  if (posts.length === prevCount || posts.length >= candidateLimit) break;
+
+  await page.evaluate(() => window.scrollBy(0, window.innerHeight * 0.8));
+  await sleepRandom(800, 1200);
+  scrollAttempts++;
+  }
 
   console.log(`📋 找到 ${posts.length} 篇候选帖子`);
 
@@ -1102,7 +1143,9 @@ async function main() {
       opts.keyword,
       opts.maxPosts,
       context,
-      opts.cookiePath
+      opts.cookiePath,
+      opts.sort,
+      opts.timeRange
     );
 
     // 过滤已采集的帖子

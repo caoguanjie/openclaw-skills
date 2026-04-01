@@ -268,11 +268,22 @@ xiaohongshu-playwright 是一个基于 Playwright 的小红书潜客挖掘工具
 
 ### 4.3 搜索排序和时间筛选
 
+**问题**：当前搜索只使用默认排序（综合），无法按热度或时间筛选，导致错过高质量内容或时效性内容。
+
 **改动**：
-- `scripts/xhs-scraper.js` — 添加 `--sort` CLI 参数（综合/最热/最新）和 `--time-range` 参数（一天内/一周内/半年内）
-- 映射到小红书搜索 URL 的 `sort` 和 `search_filter_time` 查询参数
-- `scripts/human.js` — SKILL.md 参数表更新
+- `scripts/xhs-scraper.js` — 添加 CLI 参数：
+  - `--sort <type>` — 排序方式：`general`（综合，默认）、`hot`（最热）、`new`（最新）
+  - `--time-range <range>` — 时间范围：`all`（不限，默认）、`1d`（一天内）、`1w`（一周内）、`6m`（半年内）
+- 在 `searchPosts()` 函数中构建搜索 URL 时，根据参数添加查询参数：
+  - `sort=general|popularity_descending|time_descending`
+  - `search_filter_time=1d|1w|6m`（仅当 time-range 不为 all 时添加）
+- `SKILL.md` — 更新步骤 3 的 CLI 参数表，添加 `--sort` 和 `--time-range` 说明
 - 复杂度：**小**
+
+**使用场景**：
+- 热点话题分析：`--sort hot --time-range 1d` 找最近一天的热门讨论
+- 新鲜用户挖掘：`--sort new --time-range 1w` 找最近一周的新发帖子
+- 长尾内容覆盖：`--sort general --time-range 6m` 综合排序但限制半年内
 
 ### 4.4 npm scripts + 冒烟测试
 
