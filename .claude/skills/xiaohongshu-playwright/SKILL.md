@@ -104,7 +104,55 @@ AI 收到用户输入后，**立即同时发起以下两路，互不等待**：
 
 #### 步骤 1a：环境检查
 
-读取 `references/site-patterns/xiaohongshu.md` 的「本地环境」段落，检查 `环境状态`、`Playwright依赖`、`Chromium浏览器` 三个字段。
+检查 `references/site-patterns/xiaohongshu.md` 文件：
+
+**如果文件不存在（首次运行）**：
+
+1. 创建默认文件：
+
+```bash
+SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "${SKILL_DIR}/references/site-patterns"
+cat > "${SKILL_DIR}/references/site-patterns/xiaohongshu.md" << 'EOF'
+# 小红书站点经验
+
+## 本地环境
+
+- 环境状态: 未设置
+- Playwright依赖: 未安装
+- Chromium浏览器: 未安装
+- 最后检查时间: 未设置
+
+## 用户习惯
+
+- 运行模式: 未设置
+- 设置时间: 未设置
+
+## 已知选择器
+
+### 搜索页
+- 搜索框: `input[placeholder*="搜索"]`
+- 搜索结果: `.note-item`
+
+### 帖子详情
+- 评论区: `.comment-item`
+- 用户名: `.username`
+
+## 已知陷阱
+
+暂无记录
+
+## 有效模式
+
+暂无记录
+EOF
+```
+
+2. 执行环境安装（继续下面的安装流程）
+
+**如果文件存在**：
+
+读取「本地环境」段落，检查 `环境状态`、`Playwright依赖`、`Chromium浏览器` 三个字段。
 
 **如果本地环境为「未设置」或「未就绪」**：
 

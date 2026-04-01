@@ -483,3 +483,49 @@ const saved = appendPostResultFromModule(opts.output, opts.keyword, postResult);
 - 导入别名应保持简洁，避免不必要的后缀
 - 建议在重构后运行完整测试验证
 
+
+
+
+
+## 新电脑首次运行卡死问题
+
+**日期**: 2026-04-01  
+**状态**: 已修复  
+**模块**: xiaohongshu-playwright
+
+### 问题描述
+
+在空白电脑上首次执行 skill 时流程卡死，报错：
+- `references/site-patterns/xiaohongshu.md` 缺失
+- `node_modules` 未安装（exceljs、rebrowser-patches 不可用）
+
+### 根本原因
+
+**步骤 1a 逻辑缺陷**：直接要求"读取 `xiaohongshu.md`"，但新电脑上该文件不存在，导致流程无法继续。
+
+### 修复方案
+
+修改步骤 1a 为三段式检查：
+
+```bash
+# 1. 文件不存在 → 创建默认文件 + 执行安装
+# 2. 文件存在但未就绪 → 执行安装  
+# 3. 文件存在且已就绪 → 跳过
+```
+
+新增自动创建默认 `xiaohongshu.md` 的逻辑，包含：
+- 本地环境状态（未设置）
+- 用户习惯（未设置）
+- 已知选择器（默认值）
+
+### 修复位置
+
+- **文件**: `skill.md` 步骤 1a 部分
+- **改动**: 增加文件不存在时的创建逻辑
+
+### 验证方法
+
+在全新电脑上运行，应自动：
+1. 创建 `references/site-patterns/xiaohongshu.md`
+2. 执行 `bootstrap-playwright.js` 安装依赖
+3. 正常进入后续流程
