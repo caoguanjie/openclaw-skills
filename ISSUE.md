@@ -365,7 +365,40 @@ SKILL.md 文件有 503 行，虽然通过 Sprint 1.5 减少了 27 行，但仍�
 
 ---
 
-## Sprint 4.1 搜索结果翻页加载
+## Sprint 4.3 搜索排序和时间筛选
+
+**日期**: 2026-04-26  
+**模块**: `xiaohongshu-playwright`  
+**状态**: ✅ 已完成
+
+### 问题描述
+
+搜索只使用默认排序（综合），无法按热度或时间筛选，导致错过高质量内容或时效性内容。
+
+### 解决方案
+
+添加 `--sort` 和 `--time-range` CLI 参数，映射到小红书搜索 URL 的查询参数。
+
+**修改内容**：
+
+1. `scripts/xhs-scraper.js` — `parseArgs()` 新增两个选项：
+   - `sort`（默认 `general`）
+   - `timeRange`（默认 `all`）
+
+2. switch case 解析 `--sort` 和 `--time-range`
+
+3. `searchPosts()` 函数签名增加两个新参数，构建 URL 时映射：
+   - `general` → `sort=general`
+   - `hot` → `sort=popularity_descending`
+   - `new` → `sort=time_descending`
+   - `timeRange` 非 `all` 时追加 `&search_filter_time=1d|1w|6m`
+
+4. `SKILL.md` — 步骤 3 CLI 参数表新增 `--sort` 和 `--time-range` 说明
+
+**相关文件**：
+- `.claude/skills/xiaohongshu-playwright/scripts/xhs-scraper.js`
+- `.claude/skills/xiaohongshu-playwright/SKILL.md`
+
 
 **日期**: 2026-04-01  
 **模块**: `xiaohongshu-playwright`  

@@ -227,6 +227,8 @@ node "${SKILL_DIR}/scripts/xhs-scraper.js" \
 - `--max-posts` — 最多分析帖子数（默认 10，50/50 混合选取：前半顺序+后半随机）
 - `--max-comments` — 每帖最大评论数（默认 0=全部，硬上限 500）
 - `--speed slow|normal|fast` — 滚动速度（默认 normal，推荐首次使用 slow）
+- `--sort general|hot|new` — 搜索排序方式（默认 general 综合，hot 最热，new 最新）
+- `--time-range all|1d|1w|6m` — 时间筛选范围（默认 all 不限，1d 一天内，1w 一周内，6m 半年内）
 - `--headed` — 打开浏览器运行（默认后台静默运行）
 - `--cookie-path` — cookie 文件路径
 - `--output` — 输出 JSON 路径（默认 `data/comments_<关键词>.json`）
