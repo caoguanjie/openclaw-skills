@@ -362,3 +362,27 @@ SKILL.md 文件有 503 行，虽然通过 Sprint 1.5 减少了 27 行，但仍�
 - `.claude/skills/xiaohongshu-playwright/scripts/xhs-scraper.js`
 - `eventual-imagining-harbor.md`
 - `.codex/skills/xiaohongshu-playwright/ISSUES.md`
+
+---
+
+## Sprint 4.1 搜索结果翻页加载
+
+**日期**: 2026-04-01  
+**模块**: `xiaohongshu-playwright`  
+**状态**: ✅ 已完成
+
+### 问题描述
+
+`searchPosts` 只加载搜索结果首屏，`maxPosts=10` 但首屏不足 10 篇时无法补足。
+
+### 解决方案
+
+添加滚动加载循环，自动滚动直到收集够候选帖子或无新结果。
+
+**修改内容**：
+- `scripts/xhs-scraper.js` — searchPosts 添加 while 循环（最多 10 次）
+- 每轮按 noteId 去重合并，用 `prevCount` 对比检测是否有新帖子
+- 无新增时立即 break，避免无效滚动触发风控（修复 Codex P2）
+
+**相关文件**：
+- `.claude/skills/xiaohongshu-playwright/scripts/xhs-scraper.js`
