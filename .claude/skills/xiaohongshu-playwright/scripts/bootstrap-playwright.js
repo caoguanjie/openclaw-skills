@@ -8,7 +8,7 @@ const SKILL_DIR = path.resolve(__dirname, "..");
 const MIRROR_HOST = "https://npmmirror.com/mirrors/playwright";
 const TARGET_DEPENDENCIES = {
   exceljs: "4.4.0",
-  playwright: "1.48.0",
+  playwright: "1.52.0",
   "rebrowser-patches": "1.0.19",
 };
 
@@ -119,7 +119,13 @@ function installChromium() {
 
 function patchPlaywright() {
   log("正在给 Playwright 打反检测补丁");
-  if (!runCommand("npx", ["rebrowser-patches", "patch", "--packageName", "playwright"])) {
+  // On macOS, prepend /usr/bin to ensure system patch is used over Anaconda's GNU patch 2.7.6
+  // which has an OOM bug with certain patch files.
+  const env =
+    process.platform === "darwin"
+      ? { ...process.env, PATH: `/usr/bin:${process.env.PATH}` }
+      : process.env;
+  if (!runCommand("npx", ["rebrowser-patches", "patch", "--packageName", "playwright-core"], { env })) {
     console.warn("⚠️  补丁应用失败，反检测能力可能降低");
   }
 }
