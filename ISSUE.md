@@ -553,3 +553,113 @@ const saved = appendPostResultFromModule(opts.output, opts.keyword, postResult);
   shell: process.platform === "win32"
   ```
 
+
+
+## 扫码登录误判问题（登录态检测失效）
+
+日期: 2026-04-03
+模块: xiaohongshu-playwright / xhs-scraper.js
+状态: ✅ 已修复
+
+### 问题描述
+
+扫码登录成功后，脚本仍判断"未登录"，一直等到 5 分钟超时才退出。
+
+根因：登录态判定依赖 `document.cookie.includes("customer_id")`，但小红书的 `customer_id`、`access-token` 等认证 cookie 极可能是 `HttpOnly`。`document.cookie` 无法读取 `HttpOnly` cookie，导致检测逻辑天然为 `false`，即使扫码成功也无法退出轮询。
+
+次因：轮询内的 `page.evaluate()` 无 try/catch，扫码后页面跳转时容易抛出 `Execution context was destroyed` 异常，将整个轮询打崩。
+
+### 解决方案
+
+**修改 1 — 登录判定从 document.cookie 改为 context.cookies()**
+- 位置：`scripts/xhs-scraper.js` 约 411–444行（`manualLogin()` while 循环内）
+- 核心逻辑改为：
+  ```javascript
+  const cookies = await context.cookies("https://www.xiaohongshu.com");
+  const authCookieNames = ["customer_id", "web_session", "access-token", "galaxy_cookie"];
+  const hasAuthCookie = cookies.some(c => authCookieNames.includes(c.name));
+  ```
+- `context.cookies()` 能读取 HttpOnly cookie，是解决根因的关键
+- 降级方案：cookie 层没有时再看 DOM 层，防止误判
+
+**修改 2 — page.evaluate() 加 try/catch 防崩溃**
+- 位置：同上 while 循环内
+- 捕获 `Execution context was destroyed` 等异常后继续轮询，不打崩登录流程
+
+**修改 3 — 二维码输出路径规范化**
+- 位置：`scripts/xhs-scraper.js` 约 393行
+- 删掉 `openFile(qrPath)`（无头环境下 xdg-open 可能静默失败）
+- 改为 `fs.copyFileSync(qrPath, "/tmp/xhs_qr.png")` + `console.log("[QR_CODE_PATH]:/tmp/xhs_qr.png")`
+- 上层 Playwright/Agent 可通过解析 `[QR_CODE_PATH]:` 前缀稳定获取二维码路径
+
+**修改 4 — storageState() 双重持久化**
+- 位置：3处登录成功/退出的位置（约 455行、498行、1262行）
+- 原来只存 cookie，现在同时保存 `context.storageState()`
+- storageState 路径：`data/storage_state.json`
+- 效果：恢复会话时更完整，还原 cookie + localStorage + sessionStorage
+
+**效果**：
+- 扫码后登录态检测从"永远误判 false"变为"正确识别 HttpOnly cookie"
+- 轮询异常不再打崩流程
+- 二维码路径投递链路稳定
+- 会话恢复完整性提升
+
+**相关文件**：
+- scripts/xhs-scraper.js
+
+---
+
+## IP 风控导致 error_code=300012
+
+日期: 2026-04-03
+模块: xiaohongshu-playwright / xhs-scraper.js
+状态: ⚠️ 已知问题（需用户介入）
+
+### 问题描述
+
+脚本登录成功（cookie 有效），但打开搜索页时直接被小红书重定向到错误页：
+
+```
+https://www.xiaohongshu.com/website-login/error?...&error_code=300012&error_msg=IP存在风险
+```
+
+这是**纯 IP 层面风控**，与账号无关。腾讯云轻量应用服务器等 IDC 出口 IP 段被小红书批量标记为爬虫/机器人高风险 IP，服务端直接拒绝。
+
+### 症状
+
+1. `checkLogin()` 通过（cookie 有效）
+2. `manualLogin()` 不触发（已登录）
+3. `searchPosts()` 打开搜索页时被重定向到错误 URL
+4. 错误 URL 包含 `error_code=300012`
+5. 页面内容为"IP存在风险，请切换可靠网络环境后重试"
+
+### 解决方案
+
+**代码层面无法绕过**（服务端根据真实出口 IP 拦截，UA/Header/Referrer 均无效）。
+
+必须换 IP，方案如下：
+
+| 方案 | 成本 | 可靠性 | 难度 |
+|------|------|--------|------|
+| 住宅代理（芝麻/快代理等）| 低（按流量） | 中高 | 低，一行配置 |
+| 手机热点 SSH 隧道 | 零 | 低 | 中 |
+| VPN 隧道到家庭宽带 | 低 | 高 | 高 |
+
+**推荐步骤**：
+1. 购买住宅代理（国内节点）
+2. 在 `chromium.launch()` 中配置 `proxy` 参数
+3. 验证搜索页可正常加载后再按流量/时长续费
+
+### SKILL.md 错误处理规则
+
+当脚本输出/页面 URL 包含 `error_code=300012` 或 `error_msg=IP存在风险` 时：
+- **必须**立即告知用户这是 IP 风控，停止发二维码
+- 告知用户这是云服务器 IP 被封，需要住宅代理或换网络
+- 提供上述解决方案供用户选择
+- **不得**继续重试登录流程（会循环失败）
+
+**相关文件**：
+- scripts/xhs-scraper.js（搜索流程中无专门拦截，需上层 AI 判断 URL 特征）
+- SKILL.md（二维码推送规则 + 错误识别规则）
+
+---

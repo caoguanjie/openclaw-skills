@@ -16,6 +16,14 @@
  * 输出: JSON 文件包含帖子及其评论数据
  */
 
+// rebrowser-patches: 修复 CDP leak、navigator.webdriver 等反检测
+try {
+  require("rebrowser-patches/patch");
+} catch {
+  console.warn("⚠️  rebrowser-patches 未安装，反检测能力降低");
+  console.warn("   建议运行: node scripts/bootstrap-playwright.js");
+}
+
 // External 依赖
 const { chromium } = require("playwright");
 const fs = require("fs");
@@ -315,7 +323,7 @@ async function saveCookies(context, cookiePath) {
 }
 
 // ─── 登录检测（多重判断） ───
-async function checkLogin(page) {
+async function checkLogin(page, context) {
   try {
     await page.goto("https://www.xiaohongshu.com/explore", {
       waitUntil: "domcontentloaded",
@@ -323,26 +331,38 @@ async function checkLogin(page) {
     });
     await sleepRandom(...DELAYS.READ_TIME);
 
-    const isLoggedIn = await page.evaluate(() => {
-      const hasCookieUser = document.cookie.includes("customer_id") ||
-                            document.cookie.includes("access-token");
-      const hasLoginModal = !!document.querySelector(
-        ".login-container, [class*='login-modal'], [class*='LoginModal']"
-      );
-      const hasUserEl = !!document.querySelector(
-        "[class*='user-avatar'], .reds-avatar, [class*='sidebar-user']"
-      );
-      let hasStateUser = false;
-      try {
-        const state = window.__INITIAL_STATE__;
-        if (state && state.user && state.user.userInfo && state.user.userInfo.userId) {
-          hasStateUser = true;
-        }
-      } catch {}
+    // 优先用 context.cookies() 检查认证 cookie（能抓到 HttpOnly）
+    let isLoggedIn = false;
+    try {
+      const cookies = await context.cookies("https://www.xiaohongshu.com");
+      const authCookieNames = ["customer_id", "web_session", "access-token", "galaxy_cookie"];
+      const hasAuthCookie = cookies.some(c => authCookieNames.includes(c.name));
+      if (hasAuthCookie) {
+        isLoggedIn = true;
+      }
+    } catch {}
 
-      if (hasLoginModal) return false;
-      return hasCookieUser || hasStateUser || hasUserEl;
-    });
+    // 降级：cookie 层没有时看 DOM 层
+    if (!isLoggedIn) {
+      const domResult = await page.evaluate(() => {
+        const hasLoginModal = !!document.querySelector(
+          ".login-container, [class*='login-modal'], [class*='LoginModal']"
+        );
+        const hasUserEl = !!document.querySelector(
+          "[class*='user-avatar'], .reds-avatar, [class*='sidebar-user']"
+        );
+        let hasStateUser = false;
+        try {
+          const state = window.__INITIAL_STATE__;
+          if (state && state.user && state.user.userInfo && state.user.userInfo.userId) {
+            hasStateUser = true;
+          }
+        } catch {}
+        if (hasLoginModal) return false;
+        return hasStateUser || hasUserEl;
+      });
+      isLoggedIn = domResult;
+    }
 
     return isLoggedIn;
   } catch (e) {
@@ -381,10 +401,10 @@ async function manualLogin(page, context, cookiePath, opts = {}) {
         const qrPath = path.join(qrDir, "login_qrcode.png");
         fs.writeFileSync(qrPath, Buffer.from(base64Data, "base64"));
 
+        fs.copyFileSync(qrPath, "/tmp/xhs_qr.png");
         console.log(`📱 QR 码已保存: ${qrPath}`);
-        console.log(`[QR_CODE_PATH]${qrPath}`);
+        console.log(`[QR_CODE_PATH]:/tmp/xhs_qr.png`);
         console.log("⏳ 当前为后台静默运行，请用小红书 APP 扫描二维码登录...\n");
-        openFile(qrPath);
         qrExtracted = true;
       }
     } catch {
@@ -404,17 +424,33 @@ async function manualLogin(page, context, cookiePath, opts = {}) {
   while (Date.now() - startTime < maxWait) {
     await new Promise((r) => setTimeout(r, pollInterval));
 
-    const loggedIn = await page.evaluate(() => {
-      const hasCookieUser = document.cookie.includes("customer_id") ||
-                            document.cookie.includes("access-token");
-      const hasLoginModal = !!document.querySelector(
-        ".login-container, [class*='login-modal'], [class*='LoginModal']"
-      );
-      const hasUserEl = !!document.querySelector(
-        "[class*='user-avatar'], .reds-avatar, [class*='sidebar-user']"
-      );
-      return !hasLoginModal && (hasCookieUser || hasUserEl);
-    });
+    let loggedIn = false;
+    try {
+      // 优先用 context.cookies() 判断登录态（能抓到 HttpOnly cookie）
+      const cookies = await context.cookies("https://www.xiaohongshu.com");
+      const authCookieNames = ["customer_id", "web_session", "access-token", "galaxy_cookie"];
+      const hasAuthCookie = cookies.some(c => authCookieNames.includes(c.name));
+
+      if (hasAuthCookie) {
+        loggedIn = true;
+      } else {
+        // 降级：如果 cookie 里没有，再看 DOM 层（防止误判）
+        const domLoggedIn = await page.evaluate(() => {
+          const hasLoginModal = !!document.querySelector(
+            ".login-container, [class*='login-modal'], [class*='LoginModal']"
+          );
+          const hasUserEl = !!document.querySelector(
+            "[class*='user-avatar'], .reds-avatar, [class*='sidebar-user']"
+          );
+          return !hasLoginModal && hasUserEl;
+        });
+        loggedIn = domLoggedIn;
+      }
+    } catch (err) {
+      // 捕获 "Execution context was destroyed" 等异常，忽略后继续轮询
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      process.stdout.write(`\r⚠️  本轮轮询异常（${err.message.slice(0, 60)}），${elapsed}s，继续等待...`);
+    }
 
     if (loggedIn) break;
 
@@ -429,18 +465,36 @@ async function manualLogin(page, context, cookiePath, opts = {}) {
 
   await navigationDelay();
   await saveCookies(context, cookiePath);
-  console.log("\n✅ 登录成功，cookie 已保存");
+
+  // 双重持久化：同时保存 storageState（包含 cookie + localStorage/sessionStorage）
+  const storageStatePath = cookiePath.replace("cookies.json", "storage_state.json");
+  await context.storageState({ path: storageStatePath });
+
+  console.log("\n✅ 登录成功，cookie + storageState 已保存");
 }
 
 async function hasSearchLoginModal(page) {
   try {
-    return await page.evaluate((selector) => !!document.querySelector(selector), LOGIN_MODAL_SELECTOR);
+    return await page.evaluate(() => {
+      const s = ".login-container, [class*='login-modal'], [class*='LoginModal']";
+      return !!document.querySelector(s);
+    });
   } catch {
     return false;
   }
 }
 
 async function waitForSearchLogin(page, context, cookiePath) {
+  // 先用 context.cookies() 预检是否已登录，避免 DOM selector 误判
+  try {
+    const cookies = await context.cookies("https://www.xiaohongshu.com");
+    const authCookieNames = ["customer_id", "web_session", "access-token", "galaxy_cookie"];
+    const hasAuthCookie = cookies.some(c => authCookieNames.includes(c.name));
+    if (hasAuthCookie) {
+      return false; // 已登录，不等待弹窗
+    }
+  } catch {}
+
   if (!(await hasSearchLoginModal(page))) {
     return false;
   }
@@ -452,20 +506,40 @@ async function waitForSearchLogin(page, context, cookiePath) {
 
   while (Date.now() - startTime < maxWait) {
     await new Promise((r) => setTimeout(r, pollInterval));
-    const state = await page.evaluate((selector, resultSelector) => {
-      const hasLogin = !!document.querySelector(selector);
-      const cards = document.querySelectorAll(resultSelector).length;
-      return {
-        hasLogin,
-        cards,
-        hasCookieUser:
-          document.cookie.includes("customer_id") ||
-          document.cookie.includes("access-token"),
-      };
-    }, LOGIN_MODAL_SELECTOR, SEARCH_RESULT_CARD_SELECTOR);
-    if (!state.hasLogin && (state.cards > 0 || state.hasCookieUser)) {
+
+    // 优先用 context.cookies() 判断认证状态
+    let loginSuccess = false;
+    try {
+      const cookies = await context.cookies("https://www.xiaohongshu.com");
+      const authCookieNames = ["customer_id", "web_session", "access-token", "galaxy_cookie"];
+      const hasAuthCookie = cookies.some(c => authCookieNames.includes(c.name));
+
+      if (hasAuthCookie) {
+        loginSuccess = true;
+      } else {
+        // 降级：DOM 层检测
+        const domState = await page.evaluate(() => {
+          const loginSelector = ".login-container, [class*='login-modal'], [class*='LoginModal']";
+          const cardSelector = 'section.note-item, [class*="note-item"], .feeds-page section';
+          const hasLogin = !!document.querySelector(loginSelector);
+          const cards = document.querySelectorAll(cardSelector).length;
+          return { hasLogin, cards };
+        });
+        if (!domState.hasLogin && domState.cards > 0) {
+          loginSuccess = true;
+        }
+      }
+    } catch (err) {
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      process.stdout.write(`\r⚠️  轮询异常（${err.message.slice(0, 40)}），${elapsed}s，继续等待...`);
+    }
+
+    if (loginSuccess) {
       console.log("\n✅ 登录完成");
       await saveCookies(context, cookiePath);
+      // 双重持久化：同时保存 storageState
+      const storageStatePath2 = cookiePath.replace("cookies.json", "storage_state.json");
+      await context.storageState({ path: storageStatePath2 });
       await navigationDelay();
       return true;
     }
@@ -1121,7 +1195,7 @@ async function main() {
   try {
     // 1. 加载 cookie + 检测登录态
     const hasCookies = await loadCookies(context, opts.cookiePath);
-    const isLoggedIn = hasCookies && (await checkLogin(page));
+    const isLoggedIn = hasCookies && (await checkLogin(page, context));
 
     if (!isLoggedIn) {
       await manualLogin(page, context, opts.cookiePath, opts);
@@ -1227,6 +1301,9 @@ async function main() {
     runPostPipeline(opts, result, taskSpec);
 
     await saveCookies(context, opts.cookiePath);
+    // 双重持久化：同时保存 storageState
+    const storageStatePath3 = opts.cookiePath.replace("cookies.json", "storage_state.json");
+    await context.storageState({ path: storageStatePath3 });
   } catch (e) {
     console.error("❌ 运行出错:", e.message);
     process.exit(1);
